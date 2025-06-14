@@ -11,3 +11,5 @@ anyhow = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 dirs = "6.0.0"
+chrono = { version = "0.4", features = ["serde"] }
+sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "sqlite", "chrono"] }

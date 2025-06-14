@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
-use rustchat_core::UserConfigManager;
+use rustchat_core::{UserConfigManager, MessageDatabase};
 use rustchat_types::{Message, MessageType, UserId};
 use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
@@ -78,8 +78,10 @@ async fn handle_ws_event(
     event: WsEvent,
     state: Arc<Mutex<AppState>>,
     config_manager: &UserConfigManager,
+    message_db: Arc<MessageDatabase>,
 ) -> Result<()> {
-    match event {        WsEvent::Connected { user_id } => {
+    match event {
+        WsEvent::Connected { user_id } => {
             info!("已连接到服务器，服务器分配的用户ID: {}", user_id);
             
             let mut app_state = state.lock().await;
@@ -120,8 +122,14 @@ async fn handle_ws_event(
             app_state.messages.push(msg.clone());
             drop(app_state);
             
+            // 保存消息到数据库
+            if let Err(err) = message_db.save_message(&msg).await {
+                error!("保存消息到数据库失败: {}", err);
+            }
+            
             display_message(&msg);
-        }        WsEvent::UserJoined { user_id: _, nickname } => {
+        }
+        WsEvent::UserJoined { user_id: _, nickname } => {
             let nick = nickname.unwrap_or_else(|| "匿名用户".to_string());
             println!("👋 {} 加入了聊天室", nick);
         }
@@ -143,6 +151,7 @@ async fn handle_command(
     input: &str,
     state: Arc<Mutex<AppState>>,
     config_manager: &UserConfigManager,
+    message_db: Arc<MessageDatabase>,
     ws_sender: &mut futures_util::stream::SplitSink<
         tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
         WsMessage,
@@ -161,7 +170,9 @@ async fn handle_command(
         "help" => {
             println!("📚 可用命令:");
             println!("  /help        - 显示帮助信息");
-            println!("  /nick <name> - 设置昵称");
+            println!("  /nick <n>    - 设置昵称");
+            println!("  /history [n] - 显示最近N条消息历史 (默认20条)");
+            println!("  /clear       - 清空屏幕");
             println!("  /quit        - 退出程序");
             println!("  其他输入     - 发送消息");
         }
@@ -184,6 +195,39 @@ async fn handle_command(
             app_state.nickname = Some(nickname.clone());
             
             println!("✅ 昵称已设置为: {}", nickname);
+        }
+        "history" => {
+            let limit = if parts.len() > 1 {
+                parts[1].parse::<i64>().unwrap_or(20)
+            } else {
+                20
+            };
+            
+            match message_db.get_recent_messages(limit).await {
+                Ok(messages) => {
+                    if messages.is_empty() {
+                        println!("📚 暂无消息历史");
+                    } else {
+                        println!("📚 最近 {} 条消息历史:", messages.len());
+                        println!("---");
+                        for msg in &messages {
+                            display_message(msg);
+                        }
+                        println!("---");
+                    }
+                }
+                Err(err) => {
+                    error!("获取消息历史失败: {}", err);
+                    println!("❌ 获取消息历史失败: {}", err);
+                }
+            }
+        }
+        "clear" => {
+            // 清空屏幕
+            print!("\x1B[2J\x1B[1;1H");
+            io::stdout().flush().unwrap();
+            println!("🚀 RustChat CLI v0.1.0");
+            println!("屏幕已清空");
         }
         "quit" => {
             println!("👋 再见!");
@@ -222,6 +266,24 @@ async fn run_client() -> Result<()> {
     // 初始化配置管理器
     let config_manager = UserConfigManager::new()?;
     
+    // 初始化消息数据库
+    let message_db = MessageDatabase::new().await
+        .context("Failed to initialize message database")?;
+    
+    // 加载历史消息
+    println!("📜 正在加载消息历史...");
+    let history_messages = message_db.get_recent_messages(100).await
+        .context("Failed to load message history")?;
+    
+    if !history_messages.is_empty() {
+        println!("📚 历史消息 ({} 条):", history_messages.len());
+        println!("---");
+        for msg in &history_messages {
+            display_message(msg);
+        }
+        println!("---");
+    }
+    
     // 加载或创建用户配置
     let user_config = config_manager.load_config().await?;
     info!("用户ID已加载: {}", user_config.user_id);
@@ -250,17 +312,26 @@ async fn run_client() -> Result<()> {
         let mut app_state = state.lock().await;
         app_state.user_id = Some(user_config.user_id.clone());
         app_state.nickname = user_config.nickname.clone();
+        app_state.messages.extend(history_messages);
     }
     
     // 处理WebSocket消息的任务
     let state_clone = state.clone();
     let config_manager_clone = config_manager;
+    let message_db_clone = Arc::new(message_db);
+    let message_db_clone2 = message_db_clone.clone();
+    
     let ws_task = tokio::spawn(async move {
         while let Some(msg) = ws_receiver.next().await {
             match msg {
                 Ok(WsMessage::Text(text)) => {
                     if let Ok(event) = serde_json::from_str::<WsEvent>(&text) {
-                        if let Err(err) = handle_ws_event(event, state_clone.clone(), &config_manager_clone).await {
+                        if let Err(err) = handle_ws_event(
+                            event, 
+                            state_clone.clone(), 
+                            &config_manager_clone,
+                            message_db_clone2.clone()
+                        ).await {
                             error!("处理WebSocket事件失败: {}", err);
                         }
                     }
@@ -298,6 +369,7 @@ async fn run_client() -> Result<()> {
                 input,
                 state.clone(),
                 &UserConfigManager::new()?,
+                message_db_clone.clone(),
                 &mut ws_sender,
             ).await?;
             

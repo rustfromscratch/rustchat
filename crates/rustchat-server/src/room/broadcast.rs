@@ -65,11 +65,10 @@ impl RoomBroadcastManager {
         
         room_id
     }
-    
-    /// 获取用户当前所在房间
-    pub async fn get_user_current_room(&self, user_id: UserId) -> Option<RoomId> {
+      /// 获取用户当前所在房间
+    pub async fn get_user_current_room(&self, user_id: &UserId) -> Option<RoomId> {
         let user_rooms = self.user_current_room.read().await;
-        user_rooms.get(&user_id).copied()
+        user_rooms.get(user_id).copied()
     }
     
     /// 向指定房间广播消息
@@ -94,7 +93,7 @@ impl RoomBroadcastManager {
     }
       /// 向用户当前所在房间广播消息
     pub async fn broadcast_to_user_room(&self, user_id: UserId, event: WsEvent) -> Result<Option<usize>, broadcast::error::SendError<WsEvent>> {
-        if let Some(room_id) = self.get_user_current_room(user_id.clone()).await {
+        if let Some(room_id) = self.get_user_current_room(&user_id).await {
             let count = self.broadcast_to_room(room_id, event).await?;
             Ok(Some(count))
         } else {
@@ -175,7 +174,7 @@ impl RoomMessageRouter {
     /// 路由消息到适当的房间
     pub async fn route_message(&self, message: Message, sender_id: UserId) -> Result<usize, String> {
         // 获取发送者当前所在房间
-        if let Some(room_id) = self.broadcast_manager.get_user_current_room(sender_id).await {
+        if let Some(room_id) = self.broadcast_manager.get_user_current_room(&sender_id).await {
             // 创建WebSocket事件
             let event = WsEvent::Message(message);
             

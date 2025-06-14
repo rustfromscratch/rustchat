@@ -121,13 +121,12 @@ impl RoomManager {
         let rooms = self.rooms.read().await;
         rooms.get(&room_id).cloned().ok_or(RoomError::RoomNotFound)
     }
-    
-    /// 获取用户加入的所有房间
-    pub async fn get_user_rooms(&self, user_id: UserId) -> Vec<Room> {
+      /// 获取用户加入的所有房间
+    pub async fn get_user_rooms(&self, user_id: &UserId) -> Vec<Room> {
         let user_rooms = self.user_rooms.read().await;
         let rooms = self.rooms.read().await;
         
-        if let Some(room_ids) = user_rooms.get(&user_id) {
+        if let Some(room_ids) = user_rooms.get(user_id) {
             room_ids.iter()
                 .filter_map(|&room_id| rooms.get(&room_id).cloned())
                 .collect()
@@ -145,12 +144,11 @@ impl RoomManager {
             .cloned()
             .collect()
     }
-    
-    /// 检查用户是否在指定房间中
-    pub async fn is_user_in_room(&self, room_id: RoomId, user_id: UserId) -> bool {
+      /// 检查用户是否在指定房间中
+    pub async fn is_user_in_room(&self, room_id: RoomId, user_id: &UserId) -> bool {
         let rooms = self.rooms.read().await;
         if let Some(room) = rooms.get(&room_id) {
-            room.is_member(&user_id)
+            room.is_member(user_id)
         } else {
             false
         }

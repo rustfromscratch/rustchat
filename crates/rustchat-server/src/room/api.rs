@@ -197,9 +197,8 @@ async fn get_room_members(
         .map_err(|_| StatusCode::BAD_REQUEST)?;
     let user_id = UserId::parse(&user_query.user_id)
         .map_err(|_| StatusCode::BAD_REQUEST)?;
-    
-    // 检查权限（只有房间成员可以查看成员列表）
-    if !state.room_manager.is_user_in_room(room_id, user_id).await {
+      // 检查权限（只有房间成员可以查看成员列表）
+    if !state.room_manager.is_user_in_room(room_id, &user_id).await {
         return Err(StatusCode::FORBIDDEN);
     }
     
@@ -224,7 +223,7 @@ async fn get_user_rooms(
     let user_id = UserId::parse(&user_query.user_id)
         .map_err(|_| StatusCode::BAD_REQUEST)?;
     
-    let rooms = state.room_manager.get_user_rooms(user_id.clone()).await;
+    let rooms = state.room_manager.get_user_rooms(&user_id).await;
     let responses: Vec<RoomResponse> = rooms.iter()
         .map(|room| RoomResponse::from_room(room, &user_id))
         .collect();

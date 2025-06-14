@@ -1,156 +1,197 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { onMount, onDestroy } from 'svelte';
+  import { isAuthenticated } from '../lib/store';
+  import LoginPage from '../lib/components/LoginPage.svelte';
+  import MainLayout from '../lib/components/MainLayout.svelte';
+  import { isAuthenticated as checkAuth } from '../lib/api';
+  import { 
+    initializeTauriApi, 
+    cleanupTauriApi, 
+    tauriApi, 
+    settingsManager, 
+    logManager, 
+    networkManager 
+  } from '../lib/tauri-api';
+  let authenticated = $state(false);
+  let loading = $state(true);
+  let initError = $state('');
+  let appInfo = $state<any>(null);
+  let serverStatus = $state<string>('unknown');
 
-  let name = $state("");
-  let greetMsg = $state("");
+  onMount(async () => {
+    try {
+      // 初始化 Tauri API
+      const { appInfo: info } = await initializeTauriApi();
+      appInfo = info;
+      
+      // 检查服务器连接状态
+      await checkServerConnection();
+      
+      // 显示欢迎通知
+      if (await settingsManager.getNotificationsEnabled()) {
+        await tauriApi.showNotification(
+          'Welcome to RustChat!', 
+          `Desktop application v${info.version} is ready to use.`
+        );
+      }
+      
+      // 检查本地存储中的认证状态
+      authenticated = checkAuth();
+      
+      // 记录启动日志
+      await logManager.info(`Application started successfully - v${info.version}`);
+    } catch (error) {
+      console.error('Initialization error:', error);
+      initError = `Failed to initialize application: ${error}`;
+      await logManager.error(`Initialization failed: ${error}`);
+    } finally {
+      loading = false;
+    }
+  });
 
-  async function greet(event: Event) {
-    event.preventDefault();
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    greetMsg = await invoke("greet", { name });
+  onDestroy(async () => {
+    await cleanupTauriApi();
+  });
+
+  async function checkServerConnection() {
+    try {
+      const result = await networkManager.testServerConnection();
+      serverStatus = result.success ? 'connected' : 'disconnected';
+      
+      if (!result.success) {
+        await logManager.warn(`Server connection failed: ${result.error}`);
+      } else {
+        await logManager.info(`Server connection successful (${result.response_time_ms}ms)`);
+      }
+    } catch (error) {
+      serverStatus = 'error';
+      await logManager.error(`Server connection check failed: ${error}`);
+    }
   }
+
+  // 监听认证状态变化
+  $effect(() => {
+    const unsubscribe = isAuthenticated.subscribe(value => {
+      authenticated = value;
+    });
+    return unsubscribe;
+  });
 </script>
 
-<main class="container">
-  <h1>Welcome to Tauri + Svelte</h1>
-
-  <div class="row">
-    <a href="https://vitejs.dev" target="_blank">
-      <img src="/vite.svg" class="logo vite" alt="Vite Logo" />
-    </a>
-    <a href="https://tauri.app" target="_blank">
-      <img src="/tauri.svg" class="logo tauri" alt="Tauri Logo" />
-    </a>
-    <a href="https://kit.svelte.dev" target="_blank">
-      <img src="/svelte.svg" class="logo svelte-kit" alt="SvelteKit Logo" />
-    </a>
+{#if loading}
+  <div class="loading">
+    <div class="spinner"></div>
+    <p>Initializing RustChat...</p>
+    {#if appInfo}
+      <p class="app-info">v{appInfo.version}</p>
+    {/if}
   </div>
-  <p>Click on the Tauri, Vite, and SvelteKit logos to learn more.</p>
-
-  <form class="row" onsubmit={greet}>
-    <input id="greet-input" placeholder="Enter a name..." bind:value={name} />
-    <button type="submit">Greet</button>
-  </form>
-  <p>{greetMsg}</p>
-</main>
+{:else if initError}
+  <div class="error-page">
+    <div class="error-content">
+      <h2>❌ Initialization Error</h2>
+      <p>{initError}</p>
+      <button onclick={() => window.location.reload()}>
+        🔄 Retry
+      </button>
+    </div>
+  </div>
+{:else if authenticated}
+  <MainLayout {serverStatus} {appInfo} />
+{:else}
+  <LoginPage />
+{/if}
 
 <style>
-.logo.vite:hover {
-  filter: drop-shadow(0 0 2em #747bff);
-}
-
-.logo.svelte-kit:hover {
-  filter: drop-shadow(0 0 2em #ff3e00);
-}
-
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
-}
-
-.container {
-  margin: 0;
-  padding-top: 10vh;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  text-align: center;
-}
-
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
-}
-
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
-}
-
-.row {
-  display: flex;
-  justify-content: center;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-
-a:hover {
-  color: #535bf2;
-}
-
-h1 {
-  text-align: center;
-}
-
-input,
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
-}
-
-button {
-  cursor: pointer;
-}
-
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
-}
-
-input,
-button {
-  outline: none;
-}
-
-#greet-input {
-  margin-right: 5px;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
+  :global(body) {
+    margin: 0;
+    padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica', 'Arial', sans-serif;
+    background-color: #f5f5f5;
+    color: #333;
   }
 
-  a:hover {
-    color: #24c8db;
+  :global(*) {
+    box-sizing: border-box;
   }
 
-  input,
-  button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
+  .loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
   }
-  button:active {
-    background-color: #0f0f0f69;
-  }
-}
 
+  .spinner {
+    width: 40px;
+    height: 40px;
+    border: 4px solid rgba(255, 255, 255, 0.3);
+    border-top: 4px solid white;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin-bottom: 16px;
+  }
+
+  @keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+
+  .loading p {
+    font-size: 16px;
+    margin: 8px 0;
+  }
+
+  .app-info {
+    font-size: 12px;
+    opacity: 0.8;
+  }
+
+  .error-page {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    background-color: #f8f8f8;
+  }
+
+  .error-content {
+    background: white;
+    border-radius: 12px;
+    padding: 40px;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+    text-align: center;
+    max-width: 400px;
+  }
+
+  .error-content h2 {
+    color: #e74c3c;
+    margin-bottom: 16px;
+  }
+
+  .error-content p {
+    color: #666;
+    margin-bottom: 24px;
+    line-height: 1.5;
+  }
+
+  .error-content button {
+    background: #3498db;
+    color: white;
+    border: none;
+    padding: 12px 24px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    transition: all 0.2s ease;
+  }
+
+  .error-content button:hover {
+    background: #2980b9;
+    transform: translateY(-2px);
+  }
 </style>

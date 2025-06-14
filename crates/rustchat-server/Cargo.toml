@@ -24,3 +24,11 @@ futures-util = "0.3.30"
 uuid = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = { workspace = true }
+# 认证相关依赖
+argon2 = "0.5"
+lettre = { version = "0.11", features = ["smtp-transport", "builder", "tokio1-native-tls"] }
+rand = "0.8"
+sqlx = { version = "0.8", features = ["runtime-tokio-native-tls", "sqlite", "chrono", "uuid"] }
+# JWT 相关依赖
+jsonwebtoken = "9.2"
+base64 = "0.22"

@@ -15,6 +15,149 @@ use tokio::time;
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 use tracing::{error, info};
 
+// 房间相关的 API 客户端和数据结构
+
+#[derive(Serialize, Deserialize, Debug)]
+struct CreateRoomRequest {
+    name: String,
+    description: Option<String>,
+    max_members: Option<usize>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct RoomResponse {
+    id: String,
+    name: String,
+    owner: String,
+    created_at: String,
+    member_count: usize,
+    description: Option<String>,
+    max_members: Option<usize>,
+    is_member: bool,
+    is_owner: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct ApiResponse<T> {
+    success: bool,
+    data: Option<T>,
+    error: Option<String>,
+}
+
+/// 房间 API 客户端
+struct RoomApiClient {
+    client: reqwest::Client,
+    base_url: String,
+}
+
+impl RoomApiClient {
+    fn new() -> Self {
+        Self {
+            client: reqwest::Client::new(),
+            base_url: "http://127.0.0.1:8080".to_string(),
+        }
+    }
+    
+    async fn create_room(&self, user_id: &str, room_name: String) -> Result<RoomResponse> {
+        let request = CreateRoomRequest {
+            name: room_name,
+            description: None,
+            max_members: None,
+        };
+        
+        let url = format!("{}/api/rooms?user_id={}", self.base_url, user_id);
+        let response = self.client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .context("创建房间请求失败")?;
+        
+        let api_response: ApiResponse<RoomResponse> = response
+            .json()
+            .await
+            .context("解析创建房间响应失败")?;
+        
+        if api_response.success {
+            api_response.data.ok_or_else(|| anyhow::anyhow!("响应数据为空"))
+        } else {
+            Err(anyhow::anyhow!(
+                "创建房间失败: {}",
+                api_response.error.unwrap_or_else(|| "未知错误".to_string())
+            ))
+        }
+    }
+    
+    async fn join_room(&self, user_id: &str, room_id: String) -> Result<RoomResponse> {
+        let url = format!("{}/api/rooms/{}/join?user_id={}", self.base_url, room_id, user_id);
+        let response = self.client
+            .post(&url)
+            .send()
+            .await
+            .context("加入房间请求失败")?;
+        
+        let api_response: ApiResponse<RoomResponse> = response
+            .json()
+            .await
+            .context("解析加入房间响应失败")?;
+        
+        if api_response.success {
+            api_response.data.ok_or_else(|| anyhow::anyhow!("响应数据为空"))
+        } else {
+            Err(anyhow::anyhow!(
+                "加入房间失败: {}",
+                api_response.error.unwrap_or_else(|| "未知错误".to_string())
+            ))
+        }
+    }
+    
+    async fn leave_room(&self, user_id: &str, room_id: String) -> Result<RoomResponse> {
+        let url = format!("{}/api/rooms/{}/leave?user_id={}", self.base_url, room_id, user_id);
+        let response = self.client
+            .post(&url)
+            .send()
+            .await
+            .context("离开房间请求失败")?;
+        
+        let api_response: ApiResponse<RoomResponse> = response
+            .json()
+            .await
+            .context("解析离开房间响应失败")?;
+        
+        if api_response.success {
+            api_response.data.ok_or_else(|| anyhow::anyhow!("响应数据为空"))
+        } else {
+            Err(anyhow::anyhow!(
+                "离开房间失败: {}",
+                api_response.error.unwrap_or_else(|| "未知错误".to_string())
+            ))
+        }
+    }
+    
+    async fn list_user_rooms(&self, user_id: &str) -> Result<Vec<RoomResponse>> {
+        let url = format!("{}/api/user/rooms?user_id={}", self.base_url, user_id);
+        let response = self.client
+            .get(&url)
+            .send()
+            .await
+            .context("获取房间列表请求失败")?;
+        
+        let api_response: ApiResponse<Vec<RoomResponse>> = response
+            .json()
+            .await
+            .context("解析房间列表响应失败")?;
+        
+        if api_response.success {
+            Ok(api_response.data.unwrap_or_default())
+        } else {
+            Err(anyhow::anyhow!(
+                "获取房间列表失败: {}",
+                api_response.error.unwrap_or_else(|| "未知错误".to_string())
+            ))
+        }
+    }
+}
+
 /// WebSocket事件类型（与服务器端保持一致）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", content = "data")]
@@ -44,16 +187,19 @@ pub struct AppState {
     pub messages: Vec<Message>,
     pub connected: bool,
     pub color_display: ColorDisplay,
+    pub current_room_id: Option<String>,
+    pub current_room_name: Option<String>,
 }
 
 impl AppState {
-    pub fn new() -> Self {
-        Self {
+    pub fn new() -> Self {        Self {
             user_id: None,
             nickname: None,
             messages: Vec::new(),
             connected: false,
             color_display: ColorDisplay::new(),
+            current_room_id: None,
+            current_room_name: None,
         }
     }
 }
@@ -158,6 +304,11 @@ pub enum Command {
     History(Option<i64>),
     Clear,
     Quit,
+    // 房间相关命令
+    CreateRoom(String),                // /create <room_name>
+    JoinRoom(String),                  // /join <room_id>
+    LeaveRoom,                         // /leave
+    ListRooms,                         // /rooms
     Unknown(String),
 }
 
@@ -190,8 +341,7 @@ impl CommandParser {
                 raw_input,
             };
         }
-        
-        let command = match parts[0].to_lowercase().as_str() {
+          let command = match parts[0].to_lowercase().as_str() {
             "help" | "h" => Command::Help,
             "nick" | "nickname" => {
                 if parts.len() < 2 {
@@ -212,6 +362,24 @@ impl CommandParser {
             }
             "clear" | "cls" => Command::Clear,
             "quit" | "exit" | "q" => Command::Quit,
+            // 房间相关命令
+            "create" => {
+                if parts.len() < 2 {
+                    Command::Unknown("房间名不能为空，用法: /create <房间名>".to_string())
+                } else {
+                    let room_name = parts[1..].join(" ");
+                    Command::CreateRoom(room_name)
+                }
+            }
+            "join" => {
+                if parts.len() < 2 {
+                    Command::Unknown("房间ID不能为空，用法: /join <房间ID>".to_string())
+                } else {
+                    Command::JoinRoom(parts[1].to_string())
+                }
+            }
+            "leave" => Command::LeaveRoom,
+            "rooms" | "roomlist" => Command::ListRooms,
             _ => Command::Unknown(format!("未知命令: {}", parts[0])),
         };
         
@@ -230,8 +398,7 @@ impl CommandExecutor {    /// 执行命令
         message_db: Arc<MessageDatabase>,
         ws_sender: &tokio::sync::mpsc::UnboundedSender<WsMessage>,
         color_display: &ColorDisplay,
-    ) -> Result<bool> {
-        match parsed_cmd.command {
+    ) -> Result<bool> {        match parsed_cmd.command {
             Command::Help => {
                 Self::execute_help_command(color_display).await;
                 Ok(true)
@@ -246,22 +413,35 @@ impl CommandExecutor {    /// 执行命令
             Command::History(limit) => {
                 Self::execute_history_command(limit, message_db, color_display).await;
                 Ok(true)
-            }
-            Command::Clear => {
+            }            Command::Clear => {
                 Self::execute_clear_command(color_display).await;
                 Ok(true)
             }
             Command::Quit => {
-                Self::execute_quit_command(color_display).await;
-                Ok(false) // 返回 false 表示应该退出
+                Ok(false)
             }
-            Command::Unknown(error) => {
-                color_display.display_error(&error);
-                color_display.display_info("输入 /help 查看可用命令");
+            // 房间相关命令
+            Command::CreateRoom(room_name) => {
+                Self::execute_create_room_command(room_name, state, color_display).await;
+                Ok(true)
+            }
+            Command::JoinRoom(room_id) => {
+                Self::execute_join_room_command(room_id, state, color_display).await;
+                Ok(true)
+            }
+            Command::LeaveRoom => {
+                Self::execute_leave_room_command(state, color_display).await;
+                Ok(true)
+            }
+            Command::ListRooms => {
+                Self::execute_list_rooms_command(state, color_display).await;
+                Ok(true)
+            }            Command::Unknown(msg) => {
+                color_display.display_error(&msg);
                 Ok(true)
             }
         }
-    }    /// 执行帮助命令
+    }/// 执行帮助命令
     async fn execute_help_command(color_display: &ColorDisplay) {
         use crossterm::style::{Color, SetForegroundColor, ResetColor};
         use std::io::{self, Write};
@@ -308,10 +488,24 @@ impl CommandExecutor {    /// 执行命令
         
         stdout.execute(SetForegroundColor(Color::DarkGrey)).unwrap();
         println!("├─────────────────────────────────────────────────────────┤");
-        
-        stdout.execute(SetForegroundColor(Color::Green)).unwrap();
+          stdout.execute(SetForegroundColor(Color::Green)).unwrap();
         println!("│ /history [数量]     - 显示消息历史 (默认20条)           │");
         println!("│ /hist [数量]        - history的简写                    │");
+        
+        stdout.execute(SetForegroundColor(Color::DarkGrey)).unwrap();
+        println!("├─────────────────────────────────────────────────────────┤");
+        
+        stdout.execute(SetForegroundColor(Color::Yellow)).unwrap();
+        println!("│                      房间命令                           │");
+        
+        stdout.execute(SetForegroundColor(Color::DarkGrey)).unwrap();
+        println!("├─────────────────────────────────────────────────────────┤");
+        
+        stdout.execute(SetForegroundColor(Color::Green)).unwrap();
+        println!("│ /create <房间名>    - 创建新房间                        │");
+        println!("│ /join <房间ID>      - 加入指定房间                      │");
+        println!("│ /leave              - 离开当前房间                      │");
+        println!("│ /rooms              - 列出我的房间                      │");
         
         stdout.execute(SetForegroundColor(Color::DarkGrey)).unwrap();
         println!("└─────────────────────────────────────────────────────────┘");
@@ -445,6 +639,153 @@ impl CommandExecutor {    /// 执行命令
         color_display.display_info("💾 保存配置和消息历史...");
         color_display.display_info("🔒 清理资源...");
         color_display.display_success("👋 再见！感谢使用 RustChat！");
+    }
+    
+    /// 执行创建房间命令
+    async fn execute_create_room_command(
+        room_name: String,
+        state: Arc<Mutex<AppState>>,
+        color_display: &ColorDisplay,
+    ) {
+        let user_id = {
+            let app_state = state.lock().await;
+            app_state.user_id.clone()
+        };
+        
+        if let Some(user_id) = user_id {
+            let client = RoomApiClient::new();
+            match client.create_room(&user_id.to_string(), room_name.clone()).await {
+                Ok(room) => {
+                    {
+                        let mut app_state = state.lock().await;
+                        app_state.current_room_id = Some(room.id.clone());
+                        app_state.current_room_name = Some(room.name.clone());
+                    }                    color_display.display_success(&format!("✅ 成功创建房间 '{}' (ID: {})", room.name, room.id));
+                    color_display.display_info(&format!("自动加入房间，成员数: {}", room.member_count));
+                }                Err(e) => {
+                    color_display.display_error(&format!("❌ 创建房间失败: {}", e));
+                }
+            }
+        } else {
+            color_display.display_error("❌ 未连接到服务器，无法创建房间");
+        }
+    }
+    
+    /// 执行加入房间命令
+    async fn execute_join_room_command(
+        room_id: String,
+        state: Arc<Mutex<AppState>>,
+        color_display: &ColorDisplay,
+    ) {
+        let user_id = {
+            let app_state = state.lock().await;
+            app_state.user_id.clone()
+        };
+        
+        if let Some(user_id) = user_id {
+            let client = RoomApiClient::new();
+            match client.join_room(&user_id.to_string(), room_id.clone()).await {
+                Ok(room) => {
+                    {
+                        let mut app_state = state.lock().await;
+                        app_state.current_room_id = Some(room.id.clone());
+                        app_state.current_room_name = Some(room.name.clone());
+                    }                    color_display.display_success(&format!("✅ 成功加入房间 '{}' (ID: {})", room.name, room.id));
+                    color_display.display_info(&format!("房间成员数: {}，房主: {}", room.member_count, room.owner));
+                }
+                Err(e) => {
+                    color_display.display_error(&format!("❌ 加入房间失败: {}", e));
+                }
+            }
+        } else {
+            color_display.display_error("❌ 未连接到服务器，无法加入房间");
+        }
+    }
+    
+    /// 执行离开房间命令
+    async fn execute_leave_room_command(
+        state: Arc<Mutex<AppState>>,
+        color_display: &ColorDisplay,
+    ) {
+        let (user_id, current_room_id) = {
+            let app_state = state.lock().await;
+            (app_state.user_id.clone(), app_state.current_room_id.clone())
+        };
+        
+        if let (Some(user_id), Some(room_id)) = (user_id, current_room_id) {
+            let client = RoomApiClient::new();
+            match client.leave_room(&user_id.to_string(), room_id.clone()).await {
+                Ok(room) => {
+                    {
+                        let mut app_state = state.lock().await;
+                        app_state.current_room_id = None;
+                        app_state.current_room_name = None;
+                    }
+                    color_display.display_success(&format!("✅ 成功离开房间 '{}' (ID: {})", room.name, room.id));
+                }
+                Err(e) => {
+                    color_display.display_error(&format!("❌ 离开房间失败: {}", e));
+                }
+            }
+        } else {
+            color_display.display_error("❌ 当前没有加入任何房间");
+        }
+    }
+    
+    /// 执行房间列表命令
+    async fn execute_list_rooms_command(
+        state: Arc<Mutex<AppState>>,
+        color_display: &ColorDisplay,
+    ) {
+        let user_id = {
+            let app_state = state.lock().await;
+            app_state.user_id.clone()
+        };
+        
+        if let Some(user_id) = user_id {
+            let client = RoomApiClient::new();
+            match client.list_user_rooms(&user_id.to_string()).await {
+                Ok(rooms) => {
+                    if rooms.is_empty() {
+                        color_display.display_info("📝 您还没有加入任何房间");
+                        color_display.display_info("使用 /create <房间名> 创建房间或 /join <房间ID> 加入房间");
+                    } else {
+                        color_display.display_info(&format!("📋 您的房间列表 (共 {} 个房间):", rooms.len()));
+                        println!();
+                        
+                        for room in rooms {
+                            let status_icon = if room.is_owner { "👑" } else { "👤" };
+                            let member_info = if let Some(max) = room.max_members {
+                                format!("{}/{}", room.member_count, max)
+                            } else {
+                                room.member_count.to_string()
+                            };
+                            
+                            color_display.display_info(&format!(
+                                "  {} {} (ID: {})",
+                                status_icon, room.name, room.id
+                            ));
+                            color_display.display_info(&format!(
+                                "    成员: {} | 创建时间: {}",
+                                member_info, room.created_at
+                            ));
+                            
+                            if let Some(desc) = room.description {
+                                color_display.display_info(&format!("    描述: {}", desc));
+                            }
+                            println!();
+                        }
+                        
+                        color_display.display_info("使用 /join <房间ID> 切换到指定房间");
+                    }
+                }
+                Err(e) => {
+                    color_display.display_error(&format!("❌ 获取房间列表失败: {}", e));
+                }
+            }
+        } else {
+            color_display.display_error("❌ 未连接到服务器，无法获取房间列表");
+        }
     }
 }
 

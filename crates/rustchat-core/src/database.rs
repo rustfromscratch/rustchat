@@ -295,9 +295,12 @@ impl MessageDatabase {    /// 创建新的数据库管理器
         .bind(keep_count)
         .execute(&self.pool)
         .await
-        .context("Failed to cleanup old messages")?;
+        .context("Failed to cleanup old messages")?;        Ok(result.rows_affected())
+    }
 
-        Ok(result.rows_affected())
+    /// 获取数据库连接池
+    pub fn get_pool(&self) -> &SqlitePool {
+        &self.pool
     }
 
     /// 关闭数据库连接

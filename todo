@@ -222,36 +222,36 @@
 ### 📋 核心功能清单
 
 #### 🏠 房间与群聊系统
-- [ ] **ROOM-001** 房间数据模型
-  - [ ] 定义 `Room` 结构体 (id, name, owner, created_at)
-  - [ ] 实现房间创建/删除/查询API
-  - [ ] 添加房间成员管理功能
+- [x] **ROOM-001** 房间数据模型
+  - [x] 定义 `Room` 结构体 (id, name, owner, created_at)
+  - [x] 实现房间创建/删除/查询API
+  - [x] 添加房间成员管理功能
   - **优先级:** P0
   - **预估工时:** 4小时
   - **依赖:** 数据库设计
 
-- [ ] **ROOM-002** 房间REST API
-  - [ ] `POST /api/rooms` 创建房间
-  - [ ] `POST /api/rooms/:id/join` 加入房间
-  - [ ] `DELETE /api/rooms/:id/leave` 离开房间
-  - [ ] `GET /api/rooms` 获取用户房间列表
+- [x] **ROOM-002** 房间REST API
+  - [x] `POST /api/rooms` 创建房间
+  - [x] `POST /api/rooms/:id/join` 加入房间
+  - [x] `DELETE /api/rooms/:id/leave` 离开房间
+  - [x] `GET /api/rooms` 获取用户房间列表
   - **优先级:** P0
   - **预估工时:** 5小时
   - **依赖:** ROOM-001
 
-- [ ] **ROOM-003** 分房间消息广播
-  - [ ] 修改广播机制支持房间隔离
-  - [ ] 实现 `DashMap<room_id, Vec<SocketTx>>` 连接管理
-  - [ ] 添加房间消息路由逻辑
+- [x] **ROOM-003** 分房间消息广播
+  - [x] 修改广播机制支持房间隔离
+  - [x] 实现 `DashMap<room_id, Vec<SocketTx>>` 连接管理
+  - [x] 添加房间消息路由逻辑
   - **优先级:** P0
   - **预估工时:** 4小时
   - **依赖:** ROOM-002
 
-- [ ] **ROOM-004** CLI房间命令
-  - [ ] `/create <room_name>` 创建房间
-  - [ ] `/join <room_id>` 加入房间
-  - [ ] `/rooms` 列出当前房间
-  - [ ] `/leave` 离开当前房间
+- [x] **ROOM-004** CLI房间命令 ✅
+  - [x] `/create <room_name>` 创建房间
+  - [x] `/join <room_id>` 加入房间
+  - [x] `/rooms` 列出当前房间
+  - [x] `/leave` 离开当前房间
   - **优先级:** P1
   - **预估工时:** 3小时
   - **依赖:** ROOM-003
@@ -308,13 +308,17 @@
   - **依赖:** HISTORY-002
 
 #### 🔐 账户与安全系统
-- [ ] **AUTH-001** 用户注册登录
-  - [ ] `POST /api/auth/register` 邮箱+密码注册
-  - [ ] 使用 `argon2` 进行密码哈希
-  - [ ] 邮箱验证码发送(6位数字，10分钟有效)
+- [x] **AUTH-001** 用户注册登录 ✅ **DONE**
+  - [x] `POST /api/auth/register` 邮箱+密码注册
+  - [x] 使用 `argon2` 进行密码哈希
+  - [x] 邮箱验证码发送(6位数字，10分钟有效)
+  - [x] `POST /api/auth/login` 用户登录
+  - [x] `POST /api/auth/verify-email` 邮箱验证
+  - [x] `POST /api/auth/resend-code` 重发验证码
+  - [x] `GET /api/auth/health` 认证服务健康检查
   - **优先级:** P0
-  - **预估工时:** 5小时
-  - **依赖:** 邮件服务配置
+  - **预估工时:** 5小时 ✅ **完成于 2025-06-14**
+  - **依赖:** 邮件服务配置（暂时使用日志模拟）
 
 - [ ] **AUTH-002** JWT令牌系统
   - [ ] `POST /api/auth/login` 返回Access+Refresh Token
@@ -322,7 +326,7 @@
   - [ ] 实现令牌中间件验证
   - **优先级:** P0
   - **预估工时:** 4小时
-  - **依赖:** AUTH-001
+  - **依赖:** AUTH-001 ✅
 
 - [ ] **AUTH-003** 会话管理
   - [ ] RefreshToken存储到SQLite `sessions` 表

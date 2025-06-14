@@ -1,3 +1,4 @@
+mod auth;
 mod room;
 
 use axum::{
@@ -22,6 +23,9 @@ use tracing::{debug, error, info, warn};
 
 // 导入房间相关模块
 use room::{RoomManager, RoomBroadcastManager, RoomMessageRouter, create_room_routes};
+
+// 导入认证相关模块
+use auth::{AuthService, create_auth_routes};
 
 /// WebSocket事件类型
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,10 +88,11 @@ pub struct AppState {
     pub room_broadcast_manager: RoomBroadcastManager,
     /// 房间消息路由器
     pub room_message_router: Arc<RoomMessageRouter>,
+    /// 认证服务
+    pub auth_service: AuthService,
 }
 
-impl AppState {
-    pub async fn new() -> anyhow::Result<Self> {
+impl AppState {    pub async fn new() -> anyhow::Result<Self> {
         let (tx, _rx) = broadcast::channel(1000);
         let (message_tx, _message_rx) = broadcast::channel(1000);
         let message_db = MessageDatabase::new().await?;
@@ -107,6 +112,12 @@ impl AppState {
         let room_broadcast_manager = RoomBroadcastManager::new();
         let room_message_router = Arc::new(RoomMessageRouter::new(room_broadcast_manager.clone()));
         
+        // 创建认证服务
+        let auth_service = AuthService::new(message_db.get_pool().clone());
+        
+        // 初始化认证数据库表
+        auth_service.initialize_database().await?;
+        
         Ok(Self {
             tx,
             clients: Arc::new(Mutex::new(HashMap::new())),
@@ -116,6 +127,7 @@ impl AppState {
             room_manager,
             room_broadcast_manager,
             room_message_router,
+            auth_service,
         })
     }/// 广播事件给所有客户端
     pub fn broadcast(&self, event: WsEvent) {
@@ -439,12 +451,11 @@ async fn create_app() -> anyhow::Result<Router> {
     let state = AppState::new().await?;
 
     // 启动机器人消息监听任务
-    start_bot_message_listener(state.clone()).await;
-
-    Ok(Router::new()
+    start_bot_message_listener(state.clone()).await;    Ok(Router::new()
         .route("/health", get(health_check))
         .route("/ws", get(websocket_handler))
         .merge(create_room_routes()) // 添加房间API路由
+        .merge(create_auth_routes()) // 添加认证API路由
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state))

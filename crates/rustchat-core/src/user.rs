@@ -39,6 +39,7 @@ impl Default for UserConfig {
 }
 
 /// 用户配置管理器
+#[derive(Clone)]
 pub struct UserConfigManager {
     config_dir: PathBuf,
 }
@@ -107,12 +108,18 @@ impl UserConfigManager {
             .with_context(|| format!("无法写入配置文件: {:?}", config_path))?;
 
         Ok(())
-    }
-
-    /// 更新昵称
+    }    /// 更新昵称
     pub async fn update_nickname(&self, nickname: String) -> Result<UserConfig> {
         let mut config = self.load_config().await?;
         config.nickname = Some(nickname);
+        self.save_config(&config).await?;
+        Ok(config)
+    }
+
+    /// 清除昵称
+    pub async fn clear_nickname(&self) -> Result<UserConfig> {
+        let mut config = self.load_config().await?;
+        config.nickname = None;
         self.save_config(&config).await?;
         Ok(config)
     }

@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use rustchat_types::{Message, MessageId, MessageType, UserId};
 use sqlx::{Row, SqlitePool};
 use std::path::PathBuf;
+use tracing::{debug, error};
 
 /// 数据库消息记录结构
 #[derive(Debug, Clone)]
@@ -155,15 +156,13 @@ impl MessageDatabase {    /// 创建新的数据库管理器
         .context("Failed to create user index")?;
 
         Ok(())
-    }
-
-    /// 保存消息到数据库
+    }    /// 保存消息到数据库
     pub async fn save_message(&self, message: &Message) -> Result<()> {
-        let record = MessageRecord::from(message);
-
-        sqlx::query(
+        let record = MessageRecord::from(message);        // 添加调试信息
+        debug!("Saving message to database: id={}, from_user_id={}, content_type={}, content_data={}, timestamp={}, from_nickname={:?}", 
+            record.id, record.from_user_id, record.content_type, record.content_data, record.timestamp.to_rfc3339(), record.from_nickname);        let result = sqlx::query(
             r#"
-            INSERT INTO messages (id, from_user_id, content_type, content_data, timestamp, from_nickname)
+            INSERT OR REPLACE INTO messages (id, from_user_id, content_type, content_data, timestamp, from_nickname)
             VALUES (?, ?, ?, ?, ?, ?)
             "#,
         )
@@ -174,10 +173,16 @@ impl MessageDatabase {    /// 创建新的数据库管理器
         .bind(record.timestamp.to_rfc3339())
         .bind(&record.from_nickname)
         .execute(&self.pool)
-        .await
-        .context("Failed to save message")?;
-
-        Ok(())
+        .await;        match result {
+            Ok(_) => {
+                debug!("Message saved successfully to database");
+                Ok(())
+            }
+            Err(e) => {
+                error!("Database error when saving message: {}", e);
+                Err(anyhow::Error::from(e).context("Failed to save message"))
+            }
+        }
     }
 
     /// 获取最近的消息（默认100条）

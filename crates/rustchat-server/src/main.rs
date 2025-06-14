@@ -1,3 +1,5 @@
+mod room;
+
 use axum::{
     extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
     http::StatusCode,
@@ -17,6 +19,9 @@ use tokio::time;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, warn};
+
+// 导入房间相关模块
+use room::{RoomManager, RoomBroadcastManager, RoomMessageRouter, create_room_routes};
 
 /// WebSocket事件类型
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +78,12 @@ pub struct AppState {
     pub bot_manager: Arc<Mutex<BotManager>>,
     /// 消息广播发送端（用于机器人发送消息）
     pub message_tx: broadcast::Sender<Message>,
+    /// 房间管理器
+    pub room_manager: Arc<RoomManager>,
+    /// 房间广播管理器
+    pub room_broadcast_manager: RoomBroadcastManager,
+    /// 房间消息路由器
+    pub room_message_router: Arc<RoomMessageRouter>,
 }
 
 impl AppState {
@@ -91,12 +102,20 @@ impl AppState {
         // 初始化所有机器人
         bot_manager.initialize_all().await?;
         
+        // 创建房间相关组件
+        let room_manager = Arc::new(RoomManager::new());
+        let room_broadcast_manager = RoomBroadcastManager::new();
+        let room_message_router = Arc::new(RoomMessageRouter::new(room_broadcast_manager.clone()));
+        
         Ok(Self {
             tx,
             clients: Arc::new(Mutex::new(HashMap::new())),
             message_db: Arc::new(message_db),
             bot_manager: Arc::new(Mutex::new(bot_manager)),
             message_tx,
+            room_manager,
+            room_broadcast_manager,
+            room_message_router,
         })
     }/// 广播事件给所有客户端
     pub fn broadcast(&self, event: WsEvent) {
@@ -425,6 +444,7 @@ async fn create_app() -> anyhow::Result<Router> {
     Ok(Router::new()
         .route("/health", get(health_check))
         .route("/ws", get(websocket_handler))
+        .merge(create_room_routes()) // 添加房间API路由
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state))

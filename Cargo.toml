@@ -4,7 +4,8 @@ members = [
     "crates/rustchat-core",
     "crates/rustchat-server", 
     "crates/rustchat-cli",
-    "crates/rustchat-types"
+    "crates/rustchat-types",
+    "crates/rustchat-gui/src-tauri"
 ]
 
 [workspace.dependencies]

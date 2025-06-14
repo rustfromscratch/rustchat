@@ -1,0 +1,23 @@
+[package]
+name = "rustchat-server"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rustchatd"
+path = "src/main.rs"
+
+[dependencies]
+rustchat-types = { path = "../rustchat-types" }
+rustchat-core = { path = "../rustchat-core" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+axum = { version = "0.8.4", features = ["ws"] }
+tower = "0.5"
+tower-http = { version = "0.6.6", features = ["cors", "trace"] }
+tokio-tungstenite = "0.26.2"
+futures-util = "0.3.30"

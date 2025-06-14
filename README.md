@@ -176,31 +176,3 @@ cargo test
 cargo test -p rustchat-types
 cargo test -p rustchat-core
 ```
-
-## 🛣️ 后续开发计划
-
-查看 `todo` 文件了解完整的开发路线图。
-
-下一步将实现：
-- **USER-002**: CLI用户ID本地存储增强
-- **MSG-001**: 消息数据结构完善  
-- **MSG-002**: WebSocket服务器功能扩展
-- **NET-001**: 消息收发循环优化
-
-## 🤝 贡献指南
-
-1. Fork项目
-2. 创建功能分支
-3. 提交更改
-4. 创建Pull Request
-
-## 📄 许可证
-
-本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情。
-
-## 🔗 相关资源
-
-- [Rust官方文档](https://doc.rust-lang.org/)
-- [Tokio异步运行时](https://tokio.rs/)
-- [Axum Web框架](https://github.com/tokio-rs/axum)
-- [WebSocket协议规范](https://tools.ietf.org/html/rfc6455)

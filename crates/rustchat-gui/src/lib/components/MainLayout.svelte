@@ -3,6 +3,7 @@
   import Sidebar from './Sidebar.svelte';
   import ChatArea from './ChatArea.svelte';
   import RoomList from './RoomList.svelte';
+  import Friends from './Friends.svelte';
   import StatusBar from './StatusBar.svelte';
   import { actions, currentRoom, rooms, user } from '../store';
   import { roomApi, clearTokens } from '../api';
@@ -15,16 +16,16 @@
   let { serverStatus = 'unknown', appInfo = null }: Props = $props();
 
   let showRoomList = $state(true);
+  let showFriends = $state(false);
   let loading = $state(false);
 
   onMount(async () => {
     await loadRooms();
-  });
-
-  async function loadRooms() {
+  });  async function loadRooms() {
     loading = true;
     try {
-      const response = await roomApi.getRooms();
+      if (!$user) return;
+      const response = await roomApi.getUserRooms();
       if (response.data) {
         actions.setRooms(response.data);
       }
@@ -42,15 +43,26 @@
 
   function toggleRoomList() {
     showRoomList = !showRoomList;
+    showFriends = false;
   }
+  function toggleFriends() {
+    showFriends = !showFriends;
+    showRoomList = false;
+  }
+
+  // 调试currentRoom的变化
+  $effect(() => {
+    console.log('MainLayout: currentRoom changed to:', $currentRoom);
+  });
 </script>
 
 <div class="main-layout">
-  <div class="main-content">
-    <!-- 侧边栏 -->
+  <div class="main-content">    <!-- 侧边栏 -->
     <Sidebar 
       {showRoomList}
+      {showFriends}
       onToggleRoomList={toggleRoomList}
+      onToggleFriends={toggleFriends}
       onLogout={handleLogout}
     />
 
@@ -74,6 +86,13 @@
     <!-- 房间列表侧边栏 -->
     {#if showRoomList}
       <RoomList onRefresh={loadRooms} {loading} />
+    {/if}
+
+    <!-- 好友面板 -->
+    {#if showFriends}
+      <div class="friends-sidebar">
+        <Friends />
+      </div>
     {/if}
   </div>
   
@@ -130,5 +149,14 @@
     margin-bottom: 12px;
     font-size: 16px;
     line-height: 1.5;
+  }
+
+  .friends-sidebar {
+    width: 350px;
+    background-color: white;
+    border-left: 1px solid #e0e0e0;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
   }
 </style>

@@ -1,5 +1,6 @@
 mod auth;
 mod room;
+mod friend;
 
 use axum::{
     extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
@@ -22,10 +23,13 @@ use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, warn};
 
 // 导入房间相关模块
-use room::{RoomManager, RoomBroadcastManager, RoomMessageRouter, create_room_routes};
+use room::{RoomManager, RoomBroadcastManager, RoomMessageRouter, create_protected_room_routes, create_public_room_routes};
 
 // 导入认证相关模块
 use auth::{AuthService, create_auth_routes};
+
+// 导入好友相关模块
+use friend::{FriendManager, create_friend_routes};
 
 /// WebSocket事件类型
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +43,12 @@ pub enum WsEvent {
     UserJoined { user_id: UserId, nickname: Option<String> },
     /// 用户离开
     UserLeft { user_id: UserId },
+    /// 房间消息
+    RoomMessage { room_id: String, message: Message },
+    /// 用户加入房间
+    UserJoinedRoom { room_id: String, user_id: UserId },
+    /// 用户离开房间
+    UserLeftRoom { room_id: String, user_id: UserId },
     /// 心跳ping
     Ping,
     /// 心跳pong
@@ -53,6 +63,12 @@ pub enum WsEvent {
 pub enum ClientMessage {
     /// 发送文本消息
     SendMessage { content: String, nickname: Option<String> },
+    /// 发送房间消息
+    SendRoomMessage { room_id: String, content: String },
+    /// 加入房间
+    JoinRoom { room_id: String },
+    /// 离开房间
+    LeaveRoom { room_id: String },
     /// 设置昵称
     SetNickname { nickname: String },
     /// 心跳响应
@@ -64,9 +80,12 @@ pub enum ClientMessage {
 pub struct ConnectedClient {
     pub user_id: UserId,
     pub nickname: Option<String>,
+    pub email: Option<String>,
     pub sender: tokio::sync::mpsc::UnboundedSender<WsEvent>,
     pub last_pong: Arc<Mutex<Instant>>,
     pub connected_at: Instant,
+    /// 当前所在房间的广播接收器
+    pub room_receiver: Arc<Mutex<Option<tokio::sync::broadcast::Receiver<WsEvent>>>>,
 }
 
 /// 应用状态
@@ -90,6 +109,8 @@ pub struct AppState {
     pub room_message_router: Arc<RoomMessageRouter>,
     /// 认证服务
     pub auth_service: AuthService,
+    /// 好友管理器
+    pub friend_manager: Arc<Mutex<FriendManager>>,
 }
 
 impl AppState {    pub async fn new() -> anyhow::Result<Self> {
@@ -111,12 +132,14 @@ impl AppState {    pub async fn new() -> anyhow::Result<Self> {
         let room_manager = Arc::new(RoomManager::new());
         let room_broadcast_manager = RoomBroadcastManager::new();
         let room_message_router = Arc::new(RoomMessageRouter::new(room_broadcast_manager.clone()));
-        
-        // 创建认证服务
+          // 创建认证服务
         let auth_service = AuthService::new(message_db.get_pool().clone());
         
         // 初始化认证数据库表
         auth_service.initialize_database().await?;
+        
+        // 创建好友管理器
+        let friend_manager = Arc::new(Mutex::new(FriendManager::new()));
         
         Ok(Self {
             tx,
@@ -128,6 +151,7 @@ impl AppState {    pub async fn new() -> anyhow::Result<Self> {
             room_broadcast_manager,
             room_message_router,
             auth_service,
+            friend_manager,
         })
     }/// 广播事件给所有客户端
     pub fn broadcast(&self, event: WsEvent) {
@@ -165,16 +189,107 @@ impl AppState {    pub async fn new() -> anyhow::Result<Self> {
 pub async fn websocket_handler(
     ws: WebSocketUpgrade,
     axum::extract::State(state): axum::extract::State<AppState>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
 ) -> Response {
-    ws.on_upgrade(|socket| handle_socket(socket, state))
+    // 尝试从headers或query参数中提取认证信息
+    let auth_user = extract_user_from_headers(&state, &headers).await;
+    let auth_user = if auth_user.is_none() {
+        extract_user_from_query(&state, &params).await
+    } else {
+        auth_user
+    };
+    
+    ws.on_upgrade(move |socket| handle_socket(socket, state, auth_user))
+}
+
+/// 从query参数中提取认证用户信息
+async fn extract_user_from_query(
+    state: &AppState,
+    params: &HashMap<String, String>
+) -> Option<auth::AuthenticatedUser> {
+    use auth::TokenType;
+    
+    // 从query参数中提取token
+    let token = params.get("token")?;
+
+    // 验证token并提取用户信息
+    match state.auth_service.verify_token(token, TokenType::Access) {
+        Ok(claims) => {
+            // 从claims.sub解析AccountId
+            let account_id = auth::AccountId::parse(&claims.sub).ok()?;
+            
+            // 从数据库获取完整的用户信息
+            match state.auth_service.get_account_by_id(&account_id).await {
+                Ok(account) => {
+                    let user_id = UserId::parse(&account.id.to_string()).ok()?;
+                    
+                    Some(auth::AuthenticatedUser {
+                        user_id,
+                        account_id: account.id.to_string(),
+                        email: account.email,
+                    })
+                }
+                Err(_) => None,
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+/// 从请求头中提取认证用户信息
+async fn extract_user_from_headers(
+    state: &AppState,
+    headers: &axum::http::HeaderMap
+) -> Option<auth::AuthenticatedUser> {
+    use axum::http::header::AUTHORIZATION;
+    use auth::TokenType;
+    
+    // 从Authorization header中提取token
+    let auth_header = headers
+        .get(AUTHORIZATION)
+        .and_then(|header| header.to_str().ok())?;
+
+    if !auth_header.starts_with("Bearer ") {
+        return None;
+    }
+
+    let token = &auth_header[7..]; // 移除 "Bearer " 前缀
+
+    // 验证token并提取用户信息
+    match state.auth_service.verify_token(token, TokenType::Access) {
+        Ok(claims) => {
+            // 从claims.sub解析AccountId
+            let account_id = auth::AccountId::parse(&claims.sub).ok()?;
+            
+            // 从数据库获取完整的用户信息
+            match state.auth_service.get_account_by_id(&account_id).await {
+                Ok(account) => {
+                    let user_id = UserId::parse(&account.id.to_string()).ok()?;
+                    
+                    Some(auth::AuthenticatedUser {
+                        user_id,
+                        account_id: account.id.to_string(),
+                        email: account.email,
+                    })
+                }
+                Err(_) => None,
+            }
+        }
+        Err(_) => None,
+    }
 }
 
 /// 处理WebSocket连接
-async fn handle_socket(socket: WebSocket, state: AppState) {
-    // 为新连接生成用户ID
-    let user_id = generate_user_id();
+async fn handle_socket(socket: WebSocket, state: AppState, auth_user: Option<auth::AuthenticatedUser>) {
+    // 使用认证用户的ID或生成新的用户ID
+    let (user_id, user_email) = if let Some(auth) = auth_user {
+        (auth.user_id, Some(auth.email))
+    } else {
+        (generate_user_id(), None)
+    };
     
-    info!("新的WebSocket连接，用户ID: {}", user_id);    let (mut ws_sender, ws_receiver) = socket.split();
+    info!("新的WebSocket连接，用户ID: {}，邮箱: {:?}", user_id, user_email);let (mut ws_sender, ws_receiver) = socket.split();
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<WsEvent>();
 
     // 发送连接建立事件
@@ -189,32 +304,34 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
     let client = ConnectedClient {
         user_id: user_id.clone(),
         nickname: None,
+        email: user_email,
         sender: tx.clone(),
         last_pong: Arc::new(Mutex::new(now)),
         connected_at: now,
+        room_receiver: Arc::new(Mutex::new(None)),
     };// 订阅广播频道
-    let broadcast_rx = state.tx.subscribe();
-
-    // 启动广播消息处理任务
+    let broadcast_rx = state.tx.subscribe();    // 启动广播消息处理任务
     let broadcast_task = tokio::spawn(broadcast_message_task(broadcast_rx, tx.clone()));
 
+    // 启动房间消息监听任务
+    let room_message_task = tokio::spawn(room_message_task(user_id.clone(), state.clone(), tx.clone()));
+
     // 现在添加到客户端列表（此时广播频道已有订阅者）
-    state.add_client(client).await;    // 启动消息发送任务
+    state.add_client(client).await;// 启动消息发送任务
     let send_task = tokio::spawn(message_send_task(ws_sender, rx));
 
     // 启动心跳任务
     let heartbeat_task = tokio::spawn(heartbeat_task(user_id.clone(), state.clone()));
 
     // 启动消息接收循环
-    let receive_task = tokio::spawn(message_receive_loop(ws_receiver, user_id.clone(), state.clone()));
-
-    // 等待任何一个任务完成
+    let receive_task = tokio::spawn(message_receive_loop(ws_receiver, user_id.clone(), state.clone()));    // 等待任何一个任务完成
     tokio::select! {
         _ = send_task => {},
         _ = receive_task => {},
         _ = broadcast_task => {},
+        _ = room_message_task => {},
         _ = heartbeat_task => {},
-    }    // 清理客户端连接
+    }// 清理客户端连接
     state.remove_client(&user_id).await;
 }
 
@@ -311,6 +428,116 @@ async fn handle_client_message(
                 let clients = state.clients.lock().await;
                 if let Some(client) = clients.get(user_id) {
                     *client.last_pong.lock().await = Instant::now();
+                }
+            }
+        }
+        ClientMessage::SendRoomMessage { room_id, content } => {
+            // 处理房间消息
+            let room_id_parsed = match room::RoomId::parse(&room_id) {
+                Ok(id) => id,
+                Err(_) => return Err(anyhow::anyhow!("无效的房间ID: {}", room_id)),
+            };
+
+            // 检查用户是否在房间中
+            if !state.room_manager.is_user_in_room(room_id_parsed, user_id).await {
+                return Err(anyhow::anyhow!("用户不在房间 {} 中", room_id));
+            }
+
+            // 创建房间消息
+            let mut message = Message::new_text(user_id.clone(), content.clone(), None);
+            message.additional_data = Some(serde_json::json!({
+                "room_id": room_id
+            }));
+
+            info!("广播房间消息: {} 来自用户 {} 到房间 {}", content, user_id, room_id);
+
+            // 保存消息到数据库
+            if let Err(err) = state.message_db.save_message(&message).await {
+                error!("保存房间消息到数据库失败: {}", err);
+            }
+
+            // 通过房间消息路由器广播
+            if let Err(e) = state.room_message_router.route_message(message.clone(), user_id.clone()).await {
+                error!("广播房间消息失败: {}", e);
+            }
+        }
+        ClientMessage::JoinRoom { room_id } => {
+            // 处理加入房间
+            let room_id_parsed = match room::RoomId::parse(&room_id) {
+                Ok(id) => id,
+                Err(_) => return Err(anyhow::anyhow!("无效的房间ID: {}", room_id)),
+            };
+
+            // 尝试加入房间
+            match state.room_manager.join_room(room_id_parsed, user_id.clone()).await {
+                Ok(_) => {
+                    // 在房间消息路由器中注册用户并获取接收器
+                    if let Some(room_receiver) = state.room_message_router.handle_user_enter_room(user_id.clone(), room_id_parsed).await {
+                        // 更新客户端的房间接收器
+                        {
+                            let clients = state.clients.lock().await;
+                            if let Some(client) = clients.get(user_id) {
+                                *client.room_receiver.lock().await = Some(room_receiver);
+                            }
+                        }
+
+                        info!("用户 {} 通过WebSocket加入房间: {}", user_id, room_id);
+                        
+                        // 广播用户加入房间事件
+                        state.broadcast(WsEvent::UserJoinedRoom { 
+                            room_id: room_id.clone(), 
+                            user_id: user_id.clone() 
+                        });
+                    }
+                }
+                Err(room::RoomError::UserAlreadyInRoom) => {
+                    // 用户已经在房间中，仍然需要设置接收器
+                    if let Some(room_receiver) = state.room_message_router.handle_user_enter_room(user_id.clone(), room_id_parsed).await {
+                        {
+                            let clients = state.clients.lock().await;
+                            if let Some(client) = clients.get(user_id) {
+                                *client.room_receiver.lock().await = Some(room_receiver);
+                            }
+                        }
+                        info!("用户 {} 重新连接到房间: {}", user_id, room_id);
+                    }
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!("加入房间失败: {}", e));
+                }
+            }
+        }
+        ClientMessage::LeaveRoom { room_id } => {
+            // 处理离开房间
+            let room_id_parsed = match room::RoomId::parse(&room_id) {
+                Ok(id) => id,
+                Err(_) => return Err(anyhow::anyhow!("无效的房间ID: {}", room_id)),
+            };
+
+            // 尝试离开房间
+            match state.room_manager.leave_room(room_id_parsed, user_id.clone()).await {
+                Ok(_) => {
+                    // 从房间消息路由器中移除用户
+                    state.room_message_router.handle_user_leave_room(user_id.clone()).await;
+
+                    // 清除客户端的房间接收器
+                    {
+                        let clients = state.clients.lock().await;
+                        if let Some(client) = clients.get(user_id) {
+                            *client.room_receiver.lock().await = None;
+                        }
+                    }
+
+                    info!("用户 {} 通过WebSocket离开房间: {}", user_id, room_id);
+                    
+                    // 广播用户离开房间事件
+                    state.broadcast(WsEvent::UserLeftRoom { 
+                        room_id: room_id.clone(), 
+                        user_id: user_id.clone() 
+                    });
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!("离开房间失败: {}", e));
                 }
             }
         }
@@ -451,11 +678,25 @@ async fn create_app() -> anyhow::Result<Router> {
     let state = AppState::new().await?;
 
     // 启动机器人消息监听任务
-    start_bot_message_listener(state.clone()).await;    Ok(Router::new()
+    start_bot_message_listener(state.clone()).await;
+    
+    Ok(Router::new()
         .route("/health", get(health_check))
         .route("/ws", get(websocket_handler))
-        .merge(create_room_routes()) // 添加房间API路由
+        // 需要认证的房间路由
+        .merge(room::create_protected_room_routes()
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                auth::middleware::auth_middleware
+            )))
+        // 公开的房间路由
+        .merge(room::create_public_room_routes()
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                auth::middleware::optional_auth_middleware
+            )))
         .merge(create_auth_routes()) // 添加认证API路由
+        .nest("/api/friends", create_friend_routes()) // 添加好友API路由
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state))
@@ -506,4 +747,63 @@ async fn start_bot_message_listener(state: AppState) {
         
         warn!("机器人消息监听器已停止");
     });
+}
+
+/// 房间消息监听任务
+async fn room_message_task(
+    user_id: UserId,
+    state: AppState,
+    tx: tokio::sync::mpsc::UnboundedSender<WsEvent>,
+) {
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
+    
+    loop {
+        interval.tick().await;
+        
+        // 检查用户是否有房间接收器
+        let room_receiver = {
+            let clients = state.clients.lock().await;
+            if let Some(client) = clients.get(&user_id) {
+                let mut room_receiver_guard = client.room_receiver.lock().await;
+                room_receiver_guard.take()
+            } else {
+                // 用户已断开连接
+                break;
+            }
+        };
+        
+        if let Some(mut receiver) = room_receiver {
+            // 尝试接收房间消息
+            match receiver.try_recv() {
+                Ok(event) => {
+                    // 转发房间消息到WebSocket
+                    if let Err(_) = tx.send(event) {
+                        error!("转发房间消息失败，用户可能已断开连接: {}", user_id);
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                    // 没有消息，继续监听
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                    // 房间通道已关闭
+                    debug!("房间消息通道已关闭，用户: {}", user_id);
+                }
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {
+                    // 消息滞后，继续监听
+                    warn!("房间消息滞后，用户: {}", user_id);
+                }
+            }
+            
+            // 将接收器放回
+            {
+                let clients = state.clients.lock().await;
+                if let Some(client) = clients.get(&user_id) {
+                    *client.room_receiver.lock().await = Some(receiver);
+                }
+            }
+        }
+    }
+    
+    debug!("房间消息监听任务结束，用户: {}", user_id);
 }

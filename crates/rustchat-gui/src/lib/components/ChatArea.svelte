@@ -1,17 +1,89 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { currentRoom, messages, user, actions } from '../store';
-  import { roomApi } from '../api';
+  import { roomApi } from '../api';  import { 
+    webSocketClient, 
+    connectWebSocket, 
+    sendMessage as sendWsMessage,
+    sendRoomMessage as sendWsRoomMessage,
+    joinRoom as joinWsRoom,
+    leaveRoom as leaveWsRoom,
+    connectionState,
+    lastWebSocketError,
+    ConnectionState
+  } from '../websocket';
+
   let messageInput = $state('');
   let sending = $state(false);
   let loading = $state(false);
   let messagesContainer = $state<HTMLElement>();
-
+  // WebSocket 事件处理器
+  let unsubscribeMessage: (() => void) | null = null;
+  let unsubscribeRoomMessage: (() => void) | null = null;
+  let unsubscribeUserJoinedRoom: (() => void) | null = null;
+  let unsubscribeUserLeftRoom: (() => void) | null = null;
+  let unsubscribeConnection: (() => void) | null = null;
+  let unsubscribeError: (() => void) | null = null;
   onMount(async () => {
+    // 初始化WebSocket连接
+    await initializeWebSocket();
+    
     if ($currentRoom) {
       await loadMessages();
     }
   });
+  onDestroy(() => {
+    // 清理WebSocket事件监听器
+    if (unsubscribeMessage) unsubscribeMessage();
+    if (unsubscribeRoomMessage) unsubscribeRoomMessage();
+    if (unsubscribeUserJoinedRoom) unsubscribeUserJoinedRoom();
+    if (unsubscribeUserLeftRoom) unsubscribeUserLeftRoom();
+    if (unsubscribeConnection) unsubscribeConnection();
+    if (unsubscribeError) unsubscribeError();
+  });
+  async function initializeWebSocket() {
+    try {
+      // 连接WebSocket
+      await connectWebSocket();
+      
+      // 注册全局消息处理器
+      unsubscribeMessage = webSocketClient.onMessage((messageEvent) => {
+        console.log('Received global WebSocket message:', messageEvent);
+        // WebSocket消息会自动通过store添加到消息列表
+      });
+
+      // 注册房间消息处理器
+      unsubscribeRoomMessage = webSocketClient.onRoomMessage((roomMessageEvent) => {
+        console.log('Received room WebSocket message:', roomMessageEvent);
+        // 房间消息会自动通过store添加到消息列表
+      });
+
+      // 注册用户加入房间处理器
+      unsubscribeUserJoinedRoom = webSocketClient.onUserJoinedRoom((event) => {
+        console.log('User joined room:', event);
+        // 可以在这里显示用户加入通知
+      });
+
+      // 注册用户离开房间处理器
+      unsubscribeUserLeftRoom = webSocketClient.onUserLeftRoom((event) => {
+        console.log('User left room:', event);
+        // 可以在这里显示用户离开通知
+      });
+
+      // 注册连接状态处理器
+      unsubscribeConnection = webSocketClient.onConnection((connected) => {
+        console.log('WebSocket connection state:', connected);
+      });
+
+      // 注册错误处理器
+      unsubscribeError = webSocketClient.onError((error) => {
+        console.error('WebSocket error:', error);
+      });
+
+    } catch (error) {
+      console.error('Failed to initialize WebSocket:', error);
+    }
+  }
 
   $effect(() => {
     // 当切换房间时重新加载消息
@@ -25,9 +97,7 @@
     if (messagesContainer && $messages.length > 0) {
       scrollToBottom();
     }
-  });
-
-  async function loadMessages() {
+  });  async function loadMessages() {
     if (!$currentRoom) return;
 
     loading = true;
@@ -41,19 +111,33 @@
     } finally {
       loading = false;
     }
-  }
-
-  async function sendMessage() {
-    if (!messageInput.trim() || !$currentRoom || sending) return;
+  }  async function sendMessage() {
+    if (!messageInput.trim() || sending) return;
 
     const content = messageInput.trim();
     messageInput = '';
     sending = true;
 
     try {
-      const response = await roomApi.sendMessage($currentRoom.id, content);
-      if (response.data) {
-        actions.addMessage(response.data);
+      if ($currentRoom) {
+        // 发送房间消息 (优先使用 WebSocket)
+        if ($connectionState === ConnectionState.Connected) {
+          sendWsRoomMessage($currentRoom.id, content);
+        } else {
+          // WebSocket 未连接时回退到 HTTP API
+          const response = await roomApi.sendMessage($currentRoom.id, content);
+          if (response.data) {
+            actions.addMessage(response.data);
+          }
+        }
+      } else {
+        // 发送全局消息 (通过 WebSocket)
+        if ($connectionState === ConnectionState.Connected) {
+          const nickname = $user?.username || $user?.email || 'Anonymous';
+          sendWsMessage(content, nickname);
+        } else {
+          throw new Error('WebSocket not connected');
+        }
       }
     } catch (error) {
       console.error('Failed to send message:', error);
@@ -117,11 +201,29 @@
 
 {#if !$currentRoom}
   <div class="no-room">
-    <p>Select a room to start chatting</p>
+    <div class="no-room-content">
+      <p>Select a room to start chatting</p>
+      <div class="websocket-status">
+        <div class="status-indicator" class:connected={$connectionState === ConnectionState.Connected} class:connecting={$connectionState === ConnectionState.Connecting} class:disconnected={$connectionState === ConnectionState.Disconnected || $connectionState === ConnectionState.Failed}></div>
+        <span class="status-text">
+          {#if $connectionState === ConnectionState.Connected}
+            Global Chat Connected
+          {:else if $connectionState === ConnectionState.Connecting}
+            Connecting to Global Chat...
+          {:else}
+            Global Chat Disconnected
+          {/if}
+        </span>
+      </div>
+      {#if $connectionState === ConnectionState.Connected}
+        <div class="global-chat-info">
+          <p>You can send messages to the global chat below</p>
+        </div>
+      {/if}
+    </div>
   </div>
 {:else}
-  <div class="chat-area">
-    <!-- 聊天头部 -->
+  <div class="chat-area">    <!-- 聊天头部 -->
     <div class="chat-header">
       <div class="room-info">
         <h3>{$currentRoom.name}</h3>
@@ -131,6 +233,18 @@
       </div>
       <div class="room-actions">
         <span class="member-count">👥 {$currentRoom.member_count || 0}</span>
+        <div class="websocket-status">
+          <div class="status-indicator" class:connected={$connectionState === ConnectionState.Connected} class:connecting={$connectionState === ConnectionState.Connecting} class:disconnected={$connectionState === ConnectionState.Disconnected || $connectionState === ConnectionState.Failed}></div>
+          <span class="status-text">
+            {#if $connectionState === ConnectionState.Connected}
+              Live
+            {:else if $connectionState === ConnectionState.Connecting}
+              Connecting...
+            {:else}
+              Offline
+            {/if}
+          </span>
+        </div>
       </div>
     </div>
 
@@ -172,38 +286,105 @@
           </div>
         {/each}
       {/if}
-    </div>
-
-    <!-- 输入区域 -->
+    </div>    <!-- 输入区域 -->
     <div class="input-area">
       <div class="input-container">
         <textarea
           bind:value={messageInput}
           onkeydown={handleKeydown}
-          placeholder="Type a message..."
-          disabled={sending}
+          placeholder={$currentRoom ? "Type a message..." : "Type a message to global chat..."}
+          disabled={sending || (!$currentRoom && $connectionState !== ConnectionState.Connected)}
           rows="1"
         ></textarea>
         <button 
           onclick={sendMessage} 
-          disabled={!messageInput.trim() || sending}
+          disabled={!messageInput.trim() || sending || (!$currentRoom && $connectionState !== ConnectionState.Connected)}
           class="send-button"
         >
           {sending ? '⏳' : '📤'}
         </button>
       </div>
+      {#if !$currentRoom && $connectionState !== ConnectionState.Connected}
+        <div class="connection-warning">
+          <span>⚠️ Connect to global chat to send messages</span>
+        </div>
+      {/if}
+      {#if $lastWebSocketError}
+        <div class="websocket-error">
+          <span>❌ {$lastWebSocketError}</span>
+        </div>
+      {/if}
     </div>
   </div>
 {/if}
 
-<style>
-  .no-room {
+<style>  .no-room {
     flex: 1;
     display: flex;
     align-items: center;
     justify-content: center;
     color: #666;
     font-size: 16px;
+  }
+
+  .no-room-content {
+    text-align: center;
+    max-width: 400px;
+  }
+
+  .no-room-content p {
+    margin-bottom: 20px;
+  }
+
+  .websocket-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    background: #f8f9fa;
+    border: 1px solid #e9ecef;
+    margin-bottom: 16px;
+  }
+
+  .status-indicator {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    transition: background-color 0.3s;
+  }
+
+  .status-indicator.connected {
+    background-color: #28a745;
+  }
+
+  .status-indicator.connecting {
+    background-color: #ffc107;
+    animation: pulse 1.5s infinite;
+  }
+
+  .status-indicator.disconnected {
+    background-color: #dc3545;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  .status-text {
+    font-size: 12px;
+    font-weight: 500;
+    color: #495057;
+  }
+
+  .global-chat-info {
+    color: #666;
+    font-size: 14px;
+  }
+
+  .global-chat-info p {
+    margin: 0;
   }
 
   .chat-area {
@@ -238,12 +419,23 @@
     color: #666;
     font-size: 14px;
   }
-
   .room-actions {
     display: flex;
     align-items: center;
     color: #666;
     font-size: 14px;
+    gap: 16px;
+  }
+
+  .room-actions .websocket-status {
+    margin: 0;
+    padding: 4px 8px;
+    font-size: 11px;
+  }
+
+  .room-actions .status-indicator {
+    width: 8px;
+    height: 8px;
   }
 
   .messages-container {
@@ -421,10 +613,29 @@
     background-color: #2980b9;
     transform: translateY(-2px);
   }
-
   .send-button:disabled {
     background-color: #bdc3c7;
     cursor: not-allowed;
     transform: none;
+  }
+
+  .connection-warning {
+    text-align: center;
+    padding: 8px;
+    background-color: #fff3cd;
+    color: #856404;
+    border-radius: 4px;
+    font-size: 12px;
+    margin-top: 8px;
+  }
+
+  .websocket-error {
+    text-align: center;
+    padding: 8px;
+    background-color: #f8d7da;
+    color: #721c24;
+    border-radius: 4px;
+    font-size: 12px;
+    margin-top: 8px;
   }
 </style>

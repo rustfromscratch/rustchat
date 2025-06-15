@@ -173,9 +173,8 @@ export const settingsManager = {
   async setNotificationsEnabled(enabled: boolean): Promise<void> {
     await tauriApi.saveSetting('notifications', enabled);
   },
-
   async getServerUrl(): Promise<string> {
-    return (await tauriApi.getSetting('server_url')) || 'http://localhost:3000';
+    return (await tauriApi.getSetting('server_url')) || 'http://127.0.0.1:8080';
   },
 
   async setServerUrl(url: string): Promise<void> {
@@ -270,10 +269,11 @@ export const networkManager = {
   async validateConnection(url: string): Promise<ServerConnectionResult> {
     return await tauriApi.validateServerConnection(url);
   },
-
   async testServerConnection(): Promise<ServerConnectionResult> {
     const serverUrl = await settingsManager.getServerUrl();
-    return await this.validateConnection(serverUrl);
+    // 测试健康检查端点
+    const healthUrl = `${serverUrl}/health`;
+    return await this.validateConnection(healthUrl);
   },
 };
 

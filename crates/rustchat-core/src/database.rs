@@ -14,6 +14,8 @@ pub struct MessageRecord {
     pub content_data: String,
     pub timestamp: DateTime<Utc>,
     pub from_nickname: Option<String>,
+    pub room_id: Option<String>,
+    pub additional_data: Option<String>,
 }
 
 impl From<&Message> for MessageRecord {
@@ -29,7 +31,8 @@ impl From<&Message> for MessageRecord {
                 })
                 .to_string(),
             ),
-        };
+        };        // 从additional_data中提取room_id
+        let room_id = msg.room_id.clone();
 
         Self {
             id: msg.id.to_string(),
@@ -38,6 +41,8 @@ impl From<&Message> for MessageRecord {
             content_data,
             timestamp: msg.timestamp,
             from_nickname: msg.from_nick.clone(),
+            room_id,
+            additional_data: msg.additional_data.as_ref().map(|data| data.to_string()),
         }
     }
 }
@@ -66,14 +71,15 @@ impl TryFrom<MessageRecord> for Message {
                 }
             }
             _ => return Err(anyhow::anyhow!("Unknown message type: {}", record.content_type)),
-        };
-
-        Ok(Message {
+        };        Ok(Message {
             id,
             from,
             content,
             timestamp: record.timestamp,
             from_nick: record.from_nickname,
+            room_id: record.room_id,
+            additional_data: record.additional_data.as_ref()
+                .and_then(|s| serde_json::from_str(s).ok()),
         })
     }
 }
@@ -113,9 +119,7 @@ impl MessageDatabase {    /// 创建新的数据库管理器
         // 生产环境：在用户主目录下创建数据库
         let home_dir = dirs::home_dir().context("无法获取用户主目录")?;
         Ok(home_dir.join(".rustchat").join("messages.db"))
-    }
-
-    /// 初始化数据库表
+    }    /// 初始化数据库表
     async fn init_tables(&self) -> Result<()> {
         sqlx::query(
             r#"
@@ -126,6 +130,8 @@ impl MessageDatabase {    /// 创建新的数据库管理器
                 content_data TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
                 from_nickname TEXT,
+                room_id TEXT,
+                additional_data TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             "#,
@@ -143,9 +149,7 @@ impl MessageDatabase {    /// 创建新的数据库管理器
         )
         .execute(&self.pool)
         .await
-        .context("Failed to create timestamp index")?;
-
-        sqlx::query(
+        .context("Failed to create timestamp index")?;        sqlx::query(
             r#"
             CREATE INDEX IF NOT EXISTS idx_messages_user 
             ON messages(from_user_id)
@@ -155,15 +159,30 @@ impl MessageDatabase {    /// 创建新的数据库管理器
         .await
         .context("Failed to create user index")?;
 
+        // 创建房间索引
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_messages_room 
+            ON messages(room_id)
+            "#,
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to create room index")?;
+
         Ok(())
     }    /// 保存消息到数据库
     pub async fn save_message(&self, message: &Message) -> Result<()> {
-        let record = MessageRecord::from(message);        // 添加调试信息
-        debug!("Saving message to database: id={}, from_user_id={}, content_type={}, content_data={}, timestamp={}, from_nickname={:?}", 
-            record.id, record.from_user_id, record.content_type, record.content_data, record.timestamp.to_rfc3339(), record.from_nickname);        let result = sqlx::query(
+        let record = MessageRecord::from(message);
+
+        // 添加调试信息
+        debug!("Saving message to database: id={}, from_user_id={}, content_type={}, content_data={}, timestamp={}, from_nickname={:?}, room_id={:?}", 
+            record.id, record.from_user_id, record.content_type, record.content_data, record.timestamp.to_rfc3339(), record.from_nickname, record.room_id);
+
+        let result = sqlx::query(
             r#"
-            INSERT OR REPLACE INTO messages (id, from_user_id, content_type, content_data, timestamp, from_nickname)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO messages (id, from_user_id, content_type, content_data, timestamp, from_nickname, room_id, additional_data)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(&record.id)
@@ -172,6 +191,8 @@ impl MessageDatabase {    /// 创建新的数据库管理器
         .bind(&record.content_data)
         .bind(record.timestamp.to_rfc3339())
         .bind(&record.from_nickname)
+        .bind(&record.room_id)
+        .bind(&record.additional_data)
         .execute(&self.pool)
         .await;        match result {
             Ok(_) => {
@@ -183,13 +204,11 @@ impl MessageDatabase {    /// 创建新的数据库管理器
                 Err(anyhow::Error::from(e).context("Failed to save message"))
             }
         }
-    }
-
-    /// 获取最近的消息（默认100条）
+    }    /// 获取最近的消息（默认100条）
     pub async fn get_recent_messages(&self, limit: i64) -> Result<Vec<Message>> {
         let rows = sqlx::query(
             r#"
-            SELECT id, from_user_id, content_type, content_data, timestamp, from_nickname
+            SELECT id, from_user_id, content_type, content_data, timestamp, from_nickname, room_id, additional_data
             FROM messages
             ORDER BY timestamp DESC
             LIMIT ?
@@ -198,9 +217,7 @@ impl MessageDatabase {    /// 创建新的数据库管理器
         .bind(limit)
         .fetch_all(&self.pool)
         .await
-        .context("Failed to fetch recent messages")?;
-
-        let mut messages = Vec::new();
+        .context("Failed to fetch recent messages")?;        let mut messages = Vec::new();
         for row in rows {
             let record = MessageRecord {
                 id: row.get("id"),
@@ -211,6 +228,8 @@ impl MessageDatabase {    /// 创建新的数据库管理器
                     .context("Invalid timestamp format")?
                     .with_timezone(&Utc),
                 from_nickname: row.get("from_nickname"),
+                room_id: row.get("room_id"),
+                additional_data: row.get("additional_data"),
             };
 
             match Message::try_from(record) {
@@ -225,13 +244,11 @@ impl MessageDatabase {    /// 创建新的数据库管理器
         // 反转以获得正确的时间顺序（最老的在前）
         messages.reverse();
         Ok(messages)
-    }
-
-    /// 获取指定用户的消息历史
+    }    /// 获取指定用户的消息历史
     pub async fn get_user_messages(&self, user_id: &UserId, limit: i64) -> Result<Vec<Message>> {
         let rows = sqlx::query(
             r#"
-            SELECT id, from_user_id, content_type, content_data, timestamp, from_nickname
+            SELECT id, from_user_id, content_type, content_data, timestamp, from_nickname, room_id, additional_data
             FROM messages
             WHERE from_user_id = ?
             ORDER BY timestamp DESC
@@ -255,6 +272,53 @@ impl MessageDatabase {    /// 创建新的数据库管理器
                     .context("Invalid timestamp format")?
                     .with_timezone(&Utc),
                 from_nickname: row.get("from_nickname"),
+                room_id: row.get("room_id"),
+                additional_data: row.get("additional_data"),
+            };
+
+            match Message::try_from(record) {
+                Ok(message) => messages.push(message),
+                Err(e) => {
+                    eprintln!("Failed to parse message from database: {}", e);
+                    continue;
+                }
+            }        }
+
+        messages.reverse();
+        Ok(messages)
+    }
+
+    /// 获取房间消息
+    pub async fn get_room_messages(&self, room_id: &str, limit: usize, offset: usize) -> Result<Vec<Message>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, from_user_id, content_type, content_data, timestamp, from_nickname, room_id, additional_data
+            FROM messages
+            WHERE room_id = ?
+            ORDER BY timestamp ASC
+            LIMIT ? OFFSET ?
+            "#,
+        )
+        .bind(room_id)
+        .bind(limit as i64)
+        .bind(offset as i64)
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to fetch room messages")?;
+
+        let mut messages = Vec::new();
+        for row in rows {
+            let record = MessageRecord {
+                id: row.get("id"),
+                from_user_id: row.get("from_user_id"),
+                content_type: row.get("content_type"),
+                content_data: row.get("content_data"),
+                timestamp: DateTime::parse_from_rfc3339(&row.get::<String, _>("timestamp"))
+                    .context("Invalid timestamp format")?
+                    .with_timezone(&Utc),
+                from_nickname: row.get("from_nickname"),
+                room_id: row.get("room_id"),
+                additional_data: row.get("additional_data"),
             };
 
             match Message::try_from(record) {
@@ -266,7 +330,6 @@ impl MessageDatabase {    /// 创建新的数据库管理器
             }
         }
 
-        messages.reverse();
         Ok(messages)
     }
 

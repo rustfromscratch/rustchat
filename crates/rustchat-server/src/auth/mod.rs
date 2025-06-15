@@ -1,5 +1,6 @@
 pub mod api;
 pub mod service;
+pub mod middleware;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -8,6 +9,7 @@ use uuid::Uuid;
 // 重新导出主要类型和函数
 pub use api::create_auth_routes;
 pub use service::AuthService;
+pub use middleware::{auth_middleware, optional_auth_middleware, AuthenticatedUser};
 
 /// 用户账户ID
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -144,8 +146,7 @@ impl std::str::FromStr for VerificationPurpose {
             "password_reset" => Ok(VerificationPurpose::PasswordReset),
             "login_verification" => Ok(VerificationPurpose::LoginVerification),
             _ => Err("Invalid verification purpose"),
-        }
-    }
+        }    }
 }
 
 /// 认证相关错误
@@ -171,6 +172,10 @@ pub enum AuthError {
     AccountDeleted,
     #[error("验证码发送失败")]
     VerificationSendFailed,
+    #[error("令牌已过期")]
+    TokenExpired,
+    #[error("令牌无效")]
+    InvalidToken,
     #[error("数据库错误: {0}")]
     DatabaseError(#[from] anyhow::Error),
     #[error("密码哈希错误: {0}")]

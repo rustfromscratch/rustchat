@@ -1,6 +1,6 @@
 // API 服务
 import axios, { type AxiosResponse } from 'axios';
-import type { User, Room, Message, AuthTokens, ApiResponse } from './types';
+import type { User, Room, Message, AuthTokens, ApiResponse, FriendRequest } from './types';
 
 const API_BASE_URL = 'http://127.0.0.1:8080/api';
 
@@ -131,16 +131,43 @@ export const authApi = {
       return { error: response.data.message || 'Failed to resend code' };
     }
   },
-
   async refreshToken(refreshToken: string): Promise<AuthTokens> {
-    const response: AxiosResponse<AuthTokens> = await api.post('/auth/refresh', {
+    const response: AxiosResponse<any> = await api.post('/auth/refresh', {
       refresh_token: refreshToken,
     });
-    return response.data;
+    
+    // 适配后端响应格式
+    if (response.data.success && response.data.tokens) {
+      return response.data.tokens;
+    } else {
+      throw new Error(response.data.message || 'Failed to refresh token');
+    }
   },
 
   async logout(): Promise<void> {
     await api.post('/auth/logout');
+  },
+
+  async getCurrentUser(): Promise<ApiResponse<User>> {
+    try {
+      const response: AxiosResponse<any> = await api.get('/auth/me');
+      
+      if (response.data.success && response.data.account) {
+        const account = response.data.account;
+        const user: User = {
+          id: account.account_id,
+          email: account.email,
+          username: account.display_name || undefined,
+          verified: account.email_verified,
+          created_at: account.created_at,
+        };
+        return { data: user, message: response.data.message };
+      } else {
+        return { error: response.data.message || 'Failed to get user info' };
+      }
+    } catch (error: any) {
+      return { error: error.response?.data?.message || 'Failed to get user info' };
+    }
   },
 
   // 从后端账户响应中提取用户信息
@@ -170,6 +197,11 @@ export const roomApi = {
     return response.data;
   },
 
+  async getUserRooms(): Promise<ApiResponse<Room[]>> {
+    const response: AxiosResponse<ApiResponse<Room[]>> = await api.get('/user/rooms');
+    return response.data;
+  },
+
   async joinRoom(roomId: string): Promise<ApiResponse<{ message: string }>> {
     const response: AxiosResponse<ApiResponse<{ message: string }>> = await api.post(`/rooms/${roomId}/join`);
     return response.data;
@@ -195,6 +227,50 @@ export const roomApi = {
   },
 };
 
+// 好友相关 API
+export const friendApi = {
+  async sendFriendRequest(userId: string, toUserId: string, message?: string): Promise<ApiResponse<FriendRequest>> {
+    const response: AxiosResponse<FriendRequest> = await api.post('/friends/request', {
+      to_user_id: toUserId,
+      message,
+    }, {
+      params: { user_id: userId }
+    });
+    return { data: response.data };
+  },
+
+  async respondToFriendRequest(userId: string, requestId: string, accept: boolean): Promise<ApiResponse<FriendRequest>> {
+    const response: AxiosResponse<FriendRequest> = await api.post('/friends/request/respond', {
+      request_id: requestId,
+      accept,
+    }, {
+      params: { user_id: userId }
+    });
+    return { data: response.data };
+  },
+
+  async getFriendRequests(userId: string): Promise<ApiResponse<FriendRequest[]>> {
+    const response: AxiosResponse<FriendRequest[]> = await api.get('/friends/requests', {
+      params: { user_id: userId }
+    });
+    return { data: response.data };
+  },
+
+  async getFriends(userId: string): Promise<ApiResponse<string[]>> {
+    const response: AxiosResponse<string[]> = await api.get('/friends/list', {
+      params: { user_id: userId }
+    });
+    return { data: response.data };
+  },
+
+  async removeFriend(userId: string, friendUserId: string): Promise<ApiResponse<{ message: string }>> {
+    await api.delete('/friends/remove', {
+      params: { user_id: userId, friend_user_id: friendUserId }
+    });
+    return { data: { message: 'Friend removed successfully' } };
+  },
+};
+
 // 工具函数
 export async function refreshAccessToken(refreshToken: string): Promise<AuthTokens> {
   return await authApi.refreshToken(refreshToken);
@@ -212,4 +288,17 @@ export function clearTokens(): void {
 
 export function isAuthenticated(): boolean {
   return !!localStorage.getItem('access_token');
+}
+
+// 登出函数
+export function logout() {
+  clearTokens();
+  localStorage.removeItem('user_info');
+  // 可以添加调用后端logout API的逻辑
+}
+
+// 清除用户会话
+export function clearUserSession() {
+  logout();
+  // 如果需要，可以在这里添加其他清理逻辑
 }

@@ -1,6 +1,11 @@
-<script lang="ts">
-  import { rooms, currentRoom, actions } from '../store';
+<script lang="ts">  import { rooms, currentRoom, actions, user } from '../store';
   import { roomApi } from '../api';
+  import { 
+    joinRoom as joinWsRoom, 
+    leaveRoom as leaveWsRoom, 
+    connectionState, 
+    ConnectionState 
+  } from '../websocket';
 
   interface Props {
     onRefresh: () => Promise<void>;
@@ -12,9 +17,7 @@
   let newRoomName = $state('');
   let newRoomDescription = $state('');
   let creating = $state(false);
-  let error = $state('');
-
-  async function handleCreateRoom() {
+  let error = $state('');  async function handleCreateRoom() {
     if (!newRoomName.trim()) {
       error = 'Room name is required';
       return;
@@ -39,15 +42,43 @@
     } finally {
       creating = false;
     }
-  }
-
-  async function handleJoinRoom(room: any) {
+  }  async function handleJoinRoom(room: any) {
     try {
+      console.log('Joining room:', room);
+      
+      // 如果有当前房间，先通过WebSocket离开
+      if ($currentRoom && $connectionState === ConnectionState.Connected) {
+        console.log('Leaving current room via WebSocket:', $currentRoom.id);
+        leaveWsRoom($currentRoom.id);
+      }
+      
+      // 通过HTTP API加入房间（确保认证）
       await roomApi.joinRoom(room.id);
+      console.log('Successfully joined room via HTTP API, setting current room:', room);
+      
+      // 通过WebSocket加入房间（用于实时消息）
+      if ($connectionState === ConnectionState.Connected) {
+        console.log('Joining room via WebSocket:', room.id);
+        joinWsRoom(room.id);
+      }
+      
       actions.setCurrentRoom(room);
-      // TODO: 加载房间消息
+      console.log('Current room set in store');
     } catch (err: any) {
       console.error('Failed to join room:', err);
+      
+      // 如果是409冲突（用户已经在房间中），仍然设置为当前房间
+      if (err.response?.status === 409) {
+        console.log('User already in room, setting as current room anyway:', room);
+        
+        // 通过WebSocket加入房间（用于实时消息）
+        if ($connectionState === ConnectionState.Connected) {
+          console.log('Joining room via WebSocket:', room.id);
+          joinWsRoom(room.id);
+        }
+        
+        actions.setCurrentRoom(room);
+      }
     }
   }
 

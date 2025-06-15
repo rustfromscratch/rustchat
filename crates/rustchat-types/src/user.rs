@@ -6,6 +6,45 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct UserId(Uuid);
 
+/// 用户信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct User {
+    /// 用户ID
+    pub id: UserId,
+    /// 用户昵称
+    pub nickname: Option<String>,
+    /// 用户名（登录用）
+    pub username: Option<String>,
+    /// 邮箱
+    pub email: Option<String>,
+    /// 创建时间（时间戳）
+    pub created_at: i64,
+    /// 最后活跃时间（时间戳）
+    pub last_active_at: i64,
+}
+
+impl User {
+    /// 创建新用户
+    pub fn new(id: UserId) -> Self {
+        let now = chrono::Utc::now().timestamp();
+        Self {
+            id,
+            nickname: None,
+            username: None,
+            email: None,
+            created_at: now,
+            last_active_at: now,
+        }
+    }
+
+    /// 创建新用户并设置昵称
+    pub fn with_nickname(id: UserId, nickname: String) -> Self {
+        let mut user = Self::new(id);
+        user.nickname = Some(nickname);
+        user
+    }
+}
+
 impl UserId {
     /// 生成新的用户ID
     pub fn new() -> Self {

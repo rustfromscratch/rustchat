@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { authApi, setTokens } from '../api';
   import { actions } from '../store';
 
@@ -10,7 +11,28 @@
   let showVerification = $state(false);
   let loading = $state(false);
   let error = $state('');
-  let success = $state('');  async function handleLogin() {
+  let success = $state('');
+  let serverConnected = $state(false);
+
+  // 在组件挂载时检查服务器连接
+  onMount(async () => {
+    await checkServerConnection();
+  });
+
+  async function checkServerConnection() {
+    try {
+      const response = await fetch('http://127.0.0.1:8080/health');
+      serverConnected = response.ok;
+      if (!serverConnected) {
+        error = 'Cannot connect to server. Please ensure the RustChat server is running.';
+      }
+    } catch (e) {
+      serverConnected = false;
+      error = 'Cannot connect to server. Please ensure the RustChat server is running on port 8080.';
+    }
+  }
+
+  async function handleLogin() {
     if (!email || !password) {
       error = 'Please fill in all fields';
       return;
@@ -20,15 +42,15 @@
     error = '';
 
     try {
-      const response = await authApi.login(email, password);
-      
-      if (response.data) {
+      const response = await authApi.login(email, password);      if (response.data) {
         // 保存令牌
         const { user, ...tokens } = response.data;
         setTokens(tokens);
         
-        // 设置用户信息
+        // 设置用户信息到store和localStorage
         actions.setUser(user);
+        actions.setAuthToken(tokens.access_token);
+        localStorage.setItem('user_info', JSON.stringify(user));
         
         success = 'Login successful! Redirecting...';
         
@@ -151,6 +173,19 @@
   <div class="login-card">
     <div class="logo">
       <h1>🦀 RustChat</h1>
+    </div>
+
+    <!-- Server connection status -->
+    <div class="server-status">
+      <div class="status-indicator" class:connected={serverConnected} class:disconnected={!serverConnected}></div>
+      <span class="status-text">
+        {serverConnected ? 'Server Connected' : 'Server Disconnected'}
+      </span>
+      {#if !serverConnected}
+        <button class="retry-btn" onclick={checkServerConnection} disabled={loading}>
+          🔄 Retry
+        </button>
+      {/if}
     </div>
 
     {#if showVerification}
@@ -290,6 +325,59 @@
     color: #333;
     font-size: 28px;
     font-weight: 600;
+  }
+
+  .server-status {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-bottom: 20px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    background: #f8f9fa;
+    border: 1px solid #e9ecef;
+  }
+
+  .status-indicator {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    transition: background-color 0.3s;
+  }
+
+  .status-indicator.connected {
+    background-color: #28a745;
+  }
+
+  .status-indicator.disconnected {
+    background-color: #dc3545;
+  }
+
+  .status-text {
+    font-size: 12px;
+    font-weight: 500;
+    color: #495057;
+  }
+
+  .retry-btn {
+    background: none;
+    border: none;
+    color: #007bff;
+    cursor: pointer;
+    font-size: 12px;
+    padding: 2px 4px;
+    border-radius: 3px;
+    transition: background-color 0.2s;
+  }
+
+  .retry-btn:hover:not(:disabled) {
+    background-color: #e3f2fd;
+  }
+
+  .retry-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
   }
 
   .auth-form h2,

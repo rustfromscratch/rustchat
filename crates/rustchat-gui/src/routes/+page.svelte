@@ -1,6 +1,5 @@
-<script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
-  import { isAuthenticated } from '../lib/store';
+<script lang="ts">  import { onMount, onDestroy } from 'svelte';
+  import { isAuthenticated, actions } from '../lib/store';
   import LoginPage from '../lib/components/LoginPage.svelte';
   import MainLayout from '../lib/components/MainLayout.svelte';
   import { isAuthenticated as checkAuth } from '../lib/api';
@@ -17,7 +16,6 @@
   let initError = $state('');
   let appInfo = $state<any>(null);
   let serverStatus = $state<string>('unknown');
-
   onMount(async () => {
     try {
       // 初始化 Tauri API
@@ -35,8 +33,8 @@
         );
       }
       
-      // 检查本地存储中的认证状态
-      authenticated = checkAuth();
+      // 检查并恢复认证状态
+      await restoreAuthenticationState();
       
       // 记录启动日志
       await logManager.info(`Application started successfully - v${info.version}`);
@@ -47,7 +45,55 @@
     } finally {
       loading = false;
     }
-  });
+  });  async function restoreAuthenticationState() {
+    try {
+      // 检查本地存储中是否有有效的令牌
+      const hasToken = checkAuth();
+      
+      if (hasToken) {
+        // 获取保存的访问令牌
+        const accessToken = localStorage.getItem('access_token');
+        
+        // 获取保存的用户信息
+        const savedUser = localStorage.getItem('user_info');
+        if (savedUser && accessToken) {
+          try {
+            const user = JSON.parse(savedUser);
+            actions.setUser(user);
+            actions.setAuthToken(accessToken);
+            authenticated = true;
+            await logManager.info(`User session restored: ${user.email}`);
+          } catch (e) {
+            console.error('Failed to parse saved user info:', e);
+            // 清除损坏的用户信息
+            localStorage.removeItem('user_info');
+            localStorage.removeItem('access_token');
+            localStorage.removeItem('refresh_token');
+            authenticated = false;
+          }
+        } else {
+          // 有令牌但没有用户信息，可能是旧版本的数据
+          console.warn('Token exists but no user info found');
+          authenticated = false;
+          localStorage.removeItem('access_token');
+          localStorage.removeItem('refresh_token');
+        }
+      } else {
+        authenticated = false;
+        actions.setUser(null);
+        actions.setAuthToken(null);
+      }
+    } catch (error) {
+      console.error('Failed to restore authentication state:', error);
+      authenticated = false;
+      actions.setUser(null);
+      actions.setAuthToken(null);
+      // 清除可能损坏的认证数据
+      localStorage.removeItem('access_token');
+      localStorage.removeItem('refresh_token');
+      localStorage.removeItem('user_info');
+    }
+  }
 
   onDestroy(async () => {
     await cleanupTauriApi();

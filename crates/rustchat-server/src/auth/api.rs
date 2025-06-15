@@ -21,6 +21,8 @@ pub fn create_auth_routes() -> Router<AppState> {
         .route("/api/auth/verify-email", post(verify_email))
         .route("/api/auth/resend-code", post(resend_verification_code))
         .route("/api/auth/refresh", post(refresh_token))
+        .route("/api/auth/me", get(get_current_user))
+        .route("/api/auth/logout", post(logout))
         .route("/api/auth/health", get(auth_health_check))
 }
 
@@ -249,6 +251,38 @@ async fn refresh_token(
     }
 }
 
+/// 获取当前用户信息
+async fn get_current_user(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    // 暂时返回一个简单的响应，等待添加JWT中间件
+    info!("收到获取当前用户请求");
+    
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(json!({
+            "success": false,
+            "message": "JWT认证中间件尚未实现"
+        }))
+    )
+}
+
+/// 用户登出
+async fn logout(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    // 暂时返回一个简单的响应
+    info!("收到登出请求");
+    
+    (
+        StatusCode::OK,
+        Json(json!({
+            "success": true,
+            "message": "登出成功"
+        }))
+    )
+}
+
 /// 处理认证错误，转换为HTTP响应
 fn handle_auth_error(error: AuthError) -> (StatusCode, Json<serde_json::Value>) {
     let (status, message) = match error {
@@ -262,6 +296,8 @@ fn handle_auth_error(error: AuthError) -> (StatusCode, Json<serde_json::Value>) 
         AuthError::AccountSuspended => (StatusCode::FORBIDDEN, "账户已被暂停"),
         AuthError::AccountDeleted => (StatusCode::FORBIDDEN, "账户已被删除"),
         AuthError::VerificationSendFailed => (StatusCode::SERVICE_UNAVAILABLE, "验证码发送失败"),
+        AuthError::TokenExpired => (StatusCode::UNAUTHORIZED, "令牌已过期"),
+        AuthError::InvalidToken => (StatusCode::UNAUTHORIZED, "令牌无效"),
         AuthError::DatabaseError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "数据库错误"),
         AuthError::PasswordHashError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "密码处理错误"),
         AuthError::EmailSendError(_) => (StatusCode::SERVICE_UNAVAILABLE, "邮件发送失败"),

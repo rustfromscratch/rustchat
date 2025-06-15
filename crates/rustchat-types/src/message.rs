@@ -85,10 +85,13 @@ pub struct Message {
     pub timestamp: DateTime<Utc>,
     /// 发送者昵称（可选，用于显示）
     pub from_nick: Option<String>,
+    /// 房间ID（可选，用于房间消息）
+    pub room_id: Option<String>,
+    /// 附加数据（可选，JSON格式）
+    pub additional_data: Option<serde_json::Value>,
 }
 
-impl Message {
-    /// 创建新的文本消息
+impl Message {    /// 创建新的文本消息
     pub fn new_text(from: UserId, text: String, from_nick: Option<String>) -> Self {
         Self {
             id: MessageId::new(),
@@ -96,10 +99,10 @@ impl Message {
             content: MessageType::Text(text),
             timestamp: Utc::now(),
             from_nick,
+            room_id: None,
+            additional_data: None,
         }
-    }
-
-    /// 创建系统消息
+    }    /// 创建系统消息
     pub fn new_system(text: String) -> Self {
         Self {
             id: MessageId::new(),
@@ -107,10 +110,10 @@ impl Message {
             content: MessageType::System(text),
             timestamp: Utc::now(),
             from_nick: Some("System".to_string()),
+            room_id: None,
+            additional_data: None,
         }
-    }
-
-    /// 创建昵称变更消息
+    }    /// 创建昵称变更消息
     pub fn new_nick_change(
         from: UserId,
         old_nick: String,
@@ -123,7 +126,45 @@ impl Message {
             content: MessageType::NickChange { old_nick, new_nick },
             timestamp: Utc::now(),
             from_nick,
+            room_id: None,
+            additional_data: None,
         }
+    }
+
+    /// 创建房间文本消息
+    pub fn new_room_text(
+        from: UserId, 
+        text: String, 
+        from_nick: Option<String>,
+        room_id: String
+    ) -> Self {
+        Self {
+            id: MessageId::new(),
+            from,
+            content: MessageType::Text(text),
+            timestamp: Utc::now(),
+            from_nick,
+            room_id: Some(room_id.clone()),
+            additional_data: Some(serde_json::json!({
+                "room_id": room_id
+            })),
+        }
+    }
+
+    /// 设置房间ID
+    pub fn set_room_id(&mut self, room_id: String) {
+        self.room_id = Some(room_id.clone());
+        if self.additional_data.is_none() {
+            self.additional_data = Some(serde_json::json!({}));
+        }
+        if let Some(ref mut data) = self.additional_data {
+            data["room_id"] = serde_json::Value::String(room_id);
+        }
+    }
+
+    /// 获取房间ID
+    pub fn get_room_id(&self) -> Option<&str> {
+        self.room_id.as_deref()
     }
 
     /// 获取消息的文本内容（如果是文本消息）

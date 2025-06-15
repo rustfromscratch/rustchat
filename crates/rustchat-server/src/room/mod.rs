@@ -3,7 +3,7 @@ mod api;
 mod broadcast;
 
 pub use manager::{RoomManager, RoomStats};
-pub use api::create_room_routes;
+pub use api::{create_room_routes, create_protected_room_routes, create_public_room_routes};
 pub use broadcast::{RoomBroadcastManager, RoomMessageRouter, BroadcastStats};
 
 use rustchat_types::UserId;

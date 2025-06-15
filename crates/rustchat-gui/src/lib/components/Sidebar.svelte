@@ -4,11 +4,13 @@
 
   interface Props {
     showRoomList: boolean;
+    showFriends: boolean;
     onToggleRoomList: () => void;
+    onToggleFriends: () => void;
     onLogout: () => void;
   }
 
-  let { showRoomList, onToggleRoomList, onLogout }: Props = $props();
+  let { showRoomList, showFriends, onToggleRoomList, onToggleFriends, onLogout }: Props = $props();
   let showSettings = $state(false);
 </script>
 
@@ -19,7 +21,6 @@
       <span class="app-name">RustChat</span>
     </div>
   </div>
-
   <nav class="sidebar-nav">
     <button 
       class="nav-item {showRoomList ? 'active' : ''}"
@@ -29,7 +30,10 @@
       <span class="nav-text">Rooms</span>
     </button>
 
-    <button class="nav-item">
+    <button 
+      class="nav-item {showFriends ? 'active' : ''}"
+      onclick={onToggleFriends}
+    >
       <span class="nav-icon">👥</span>
       <span class="nav-text">Friends</span>
     </button>

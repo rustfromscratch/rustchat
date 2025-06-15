@@ -196,8 +196,7 @@ impl RoomMessageRouter {
     /// 处理用户离开房间
     pub async fn handle_user_leave_room(&self, user_id: UserId) -> Option<RoomId> {
         self.broadcast_manager.user_leave_current_room(user_id).await
-    }
-      /// 向房间发送系统消息
+    }    /// 向房间发送系统消息
     pub async fn send_system_message_to_room(&self, room_id: RoomId, content: String) -> Result<usize, String> {
         let message = Message::new_system(content);
         let event = WsEvent::Message(message);
@@ -205,6 +204,16 @@ impl RoomMessageRouter {
         match self.broadcast_manager.broadcast_to_room(room_id, event).await {
             Ok(count) => Ok(count),
             Err(e) => Err(format!("发送系统消息失败: {}", e)),
+        }
+    }
+
+    /// 直接广播消息到房间
+    pub async fn broadcast_to_room(&self, room_id: RoomId, message: Message) -> Result<usize, String> {
+        let event = WsEvent::Message(message);
+        
+        match self.broadcast_manager.broadcast_to_room(room_id, event).await {
+            Ok(count) => Ok(count),
+            Err(e) => Err(format!("广播消息失败: {}", e)),
         }
     }
 }
